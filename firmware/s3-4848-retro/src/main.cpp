@@ -11,6 +11,7 @@
 #include "md_core.h"
 #include <esp_partition.h>
 #include "private_roms.h"
+#include "async_video.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -27,7 +28,8 @@ static bool nesMode=false,mdMode=false,home=true;
 static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
-static unsigned mdDiv=2,mdSeq=0;
+static unsigned mdDiv=2,mdSeq=0,goodWindows=0;
+static uint32_t queuedFrames=0,droppedFrames=0;
 static uint32_t frameDeadline=0;
 static int shownW=0,shownH=0;
 static uint32_t mdDrawUs=0,mdCoreUs=0;
@@ -101,7 +103,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 010 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 011 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -111,7 +113,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 010":nesMode?"NES / BUILD 010":"GAME BOY / BUILD 010",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 011":nesMode?"NES / BUILD 011":"GAME BOY / BUILD 011",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
@@ -130,7 +132,7 @@ static void gameUI(){
   button(190,426,102,42,mdMode?"C":"SELECT");button(300,426,100,42,"START");
   button(335,355,62,60,"B");button(407,320,64,60,"A");
 }
-static void releaseGame(){if(mdMode)md_stop();else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
+static void releaseGame(){AsyncVideo::drain();if(mdMode)md_stop();else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
   File f;
   const BuiltinROM *internal=nullptr;
@@ -160,7 +162,8 @@ static bool load(const String &p){
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
-  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=2;mdSeq=0;mdDrawUs=mdCoreUs=0;
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;queuedFrames=droppedFrames=0;mdDrawUs=mdCoreUs=0;
+  uint32_t u,n;AsyncVideo::stats(u,n);
   playing=true;gameUI();frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
@@ -171,6 +174,7 @@ void setup(){
   pinMode(42,OUTPUT);digitalWrite(42,HIGH);
   if(!lcd.begin()){Serial.println("LCD init failed");return;}
   lcd.fillScreen(BG);digitalWrite(38,HIGH);
+  Serial.printf("LCD worker core0=%s\n",AsyncVideo::begin(lcd,BG)?"ready":"fallback sync");
   Wire1.begin(19,45,400000);
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
@@ -217,7 +221,10 @@ void loop(){
   }
   const uint32_t period=mdMode?md_period():nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
-  const bool present=mdSeq++%mdDiv==0;
+  const bool due=mdSeq++%mdDiv==0;
+  const bool async=(mdMode||nesMode)&&AsyncVideo::enabled();
+  const bool present=due&&(!async||AsyncVideo::ready());
+  if(due&&!present)droppedFrames++;
   uint32_t coreStart=micros();
   if(mdMode)md_frame(keys,present);else if(nesMode)nes_core_frame(keys,present);else core_frame(keys,present);
   mdCoreUs+=micros()-coreStart;
@@ -227,11 +234,12 @@ void loop(){
       int w,h,pitch;uint16_t *pal;
       uint8_t *v=mdMode?md_video(&w,&h,&pitch,&pal):nes_core_video(&w,&h,&pitch,&pal);
       if(v&&pal){
-        if(w!=shownW||h!=shownH){lcd.fillRect(80,10,320,288,BG);shownW=w;shownH=h;}
-        lcd.drawIndexedBitmap((480-w)/2,10+(288-h)/2,v,pal,w,h,pitch-w);
+        if(async){if(AsyncVideo::submit(v,pal,w,h,pitch))queuedFrames++;else droppedFrames++;}
+        else {if(w!=shownW||h!=shownH){lcd.fillRect(80,10,320,288,BG);shownW=w;shownH=h;}
+          lcd.drawIndexedBitmap((480-w)/2,10+(288-h)/2,v,pal,w,h,pitch-w);}
       }
     }else lcd.draw16bitRGBBitmap(80,10,frame,320,288);
-    mdDrawUs+=micros()-t;perfShown++;
+    mdDrawUs+=micros()-t;if(!async)perfShown++;
   }
   lastPresented=present;
   lastWork=micros()-tickStart;
@@ -239,6 +247,8 @@ void loop(){
   if(lastWork>=period)perfOver++;
   uint32_t elapsedMs=millis()-perfStart;
   if(elapsedMs>=3000){
+    uint32_t workerUs=0,workerCount=0;AsyncVideo::stats(workerUs,workerCount);
+    if(async)perfShown=workerCount;
     Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",
       mdMode?"MD":nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,
       (unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,
@@ -246,7 +256,11 @@ void loop(){
     {
       float fps=perfFrames*1000.0f/elapsedMs,target=1000000.0f/period;
       Serial.printf("VIDEO PERF core=%u us lcd=%u us frameskip=%u target=%.1f\n",(unsigned)(mdCoreUs/perfFrames),(unsigned)(perfShown?mdDrawUs/perfShown:0),mdDiv-1,target);
-      if(fps<target-3&&mdDiv<4)mdDiv++;else if(fps>=target-1&&mdDiv>2)mdDiv--;
+      if(async)Serial.printf("ASYNC LCD=%u us submit=%u us queued=%u dropped=%u\n",(unsigned)(workerCount?workerUs/workerCount:0),(unsigned)(queuedFrames?mdDrawUs/queuedFrames:0),queuedFrames,droppedFrames);
+      if(fps<target-2){goodWindows=0;if(mdDiv<4)mdDiv++;}
+      else if(fps>=target-0.5f && droppedFrames==0){if(++goodWindows>=5){if(mdDiv>2)mdDiv--;goodWindows=0;}}
+      else goodWindows=0;
+      queuedFrames=droppedFrames=0;
       mdCoreUs=mdDrawUs=0;
     }
     perfStart=millis();perfFrames=perfShown=perfWork=perfOver=0;

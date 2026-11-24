@@ -61,3 +61,6 @@ Preserves 008D on experimental-s3-008d and 005 stable. Optimize Gwenesis only at
 
 ## Build 010 — native indexed display and fixed timeline
 Golden Axe on 009 measured 42–44 emu fps / 10–11 displayed fps, CPU ~9 ms, VDP ~9 ms, scaling ~9 ms, LCD ~10 ms. Remove RGB565 intermediate and scaler for MD/NES; use Arduino_GFX indexed bitmap API (native 320x224/256x224 MD or 256x240 NES), retain GB 2x with callback skipped on unpresented frames. Fixed frame deadline allows cheap frames to catch up with expensive ones, bounded debt, adaptive frameskip on all consoles. No direct framebuffer writes, no transparency, no panel timing changes. Actual FPS not yet measured.
+
+## Build 011 — asynchronous native presentation
+Retains 010 and stable 005. LCD indexed presentation on core 0 using a single immutable snapshot with copied palette, nonblocking submission, menu drain, synchronous fallback on resource failure. MD starts divisor 3; promotion requires five healthy 3s windows; demotion quick. NES also uses async LCD; GB rendering unchanged. No timing or panel pin changes. Physical performance not verified.
