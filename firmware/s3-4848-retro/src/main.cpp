@@ -75,7 +75,7 @@ static bool hit(Point p,int x,int y,int w,int h){
 }
 static void scan(bool includeSD=false){
   paths.clear();page=0;
-  if(nesMode&&!mdMode)for(unsigned i=0;i<private_rom_count();i++)paths.push_back(String("#")+private_rom_name(i));
+  if(nesMode||mdMode)for(unsigned i=0;i<private_rom_count();i++)if(private_rom_md(i)==mdMode)paths.push_back(String("#")+private_rom_name(i));
   for(const auto &g:builtins)if(!mdMode&&g.nes==nesMode)paths.push_back(String("@")+g.name);
   size_t builtinCount=paths.size();
   Serial.printf("ROM library %s: %u internal games\n",mdMode?"MD":nesMode?"NES":"GB",(unsigned)builtinCount);
@@ -187,7 +187,7 @@ void loop(){
         if(hit(p,20,110,440,135)||hit(p,20,262,440,135)){mdMode=false;nesMode=p.y>=262;scan();menu();}
       }else if(hit(p,206,0,76,50)){mdMode=false;nesMode=false;scan();menu();}
       else if(hit(p,292,0,82,50)){mdMode=false;nesMode=true;scan();menu();}
-      else if(hit(p,384,0,96,50)){mdMode=true;nesMode=false;scan(true);menu();}
+      else if(hit(p,384,0,96,50)){mdMode=true;nesMode=false;scan();menu();}
       else if(hit(p,14,420,110,45)){if(page)page--;menu();}
       else if(hit(p,145,420,170,45)){scan(true);menu();}
       else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}
