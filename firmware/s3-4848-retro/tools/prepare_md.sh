@@ -10,6 +10,11 @@ git -C "$tmp" checkout -q FETCH_HEAD -- gwenesis/components/gwenesis
 mkdir -p lib/gwenesis/src dist/sources
 cp -R "$tmp/gwenesis/components/gwenesis/src/"* lib/gwenesis/src/
 cp "$tmp/gwenesis/components/gwenesis/"{LICENSE,README.md,gwenesis.h} lib/gwenesis/
+# PlatformIO LDF needs the public header under src and an explicit manifest.
+sed 's@"src/@"@g' lib/gwenesis/gwenesis.h > lib/gwenesis/src/gwenesis.h
+cat > lib/gwenesis/library.json <<'JSON'
+{"name":"gwenesis","version":"0.0.1","build":{"srcDir":"src","srcFilter":["+<*>","-<cpus/Z80/Debug.c>","-<cpus/Z80/ConDebug.c>"]},"frameworks":"*","platforms":"*"}
+JSON
 find lib/gwenesis -name '*.o' -delete
 # Use caller-owned padded ROM, not a redundant second copy.
 python - <<'PY'
