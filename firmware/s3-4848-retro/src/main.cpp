@@ -12,6 +12,7 @@
 #include <esp_partition.h>
 #include "private_roms.h"
 #include "async_video.h"
+#include "retro_ui.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -25,6 +26,11 @@ static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,mdMode=false,home=true;
+static bool detail=false,overlay=false,overlayArmed=false,launchRelease=false;
+static uint32_t overlayMs=0;
+static uint8_t layoutMode=GameVideo::FULL;
+static const char* layoutNames[]={"FULL","FIT","NATIVE"};
+static size_t selected=0;
 // COMP: all scanlines + chip timers, synchronous. PCM: timers with skipped rendering.
 static unsigned mdVideoMode=0;
 static const char *mdModes[]={"COMP","PCM","20A","20S"};
@@ -54,7 +60,7 @@ static uint32_t mdDrawUs=0,mdCoreUs=0;
 static size_t page=0;
 static String status;
 struct Point{uint16_t x,y;};
-static Point points[5];
+static Point points[5],gestureStart{},gestureEnd{};
 static uint8_t npoints=0;
 static uint32_t lastTouchReport=0;
 
@@ -119,38 +125,57 @@ static void scan(bool includeSD=false){
   std::sort(paths.begin()+builtinCount,paths.end(),[](const String&a,const String&b){return a.compareTo(b)<0;});
   status=paths.empty()?"No hay ROMs":String(paths.size())+" juegos detectados";
 }
+static int systemId(){return mdMode?2:nesMode?1:0;}
+static String displayName(const String& p){return p.startsWith("@")||p.startsWith("#")?p.substring(1):p.substring(p.lastIndexOf('/')+1);}
+static String origin(const String& p){return p.startsWith("@")||p.startsWith("#")?"FLASH":"SD";}
+static size_t romSize(const String& p){
+ if(p.startsWith("#")){int i=private_rom_find(p.substring(1).c_str());return i>=0?private_rom_size(i):0;}
+ if(p.startsWith("@")){for(const auto& g:builtins)if(p.substring(1)==g.name)return g.size;return 0;}
+ File f=SD.open(p,FILE_READ);size_t n=f?f.size():0;if(f)f.close();return n;
+}
 static void homeUI(){
-  home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 018 / SELECT SYSTEM",2);
-  lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
-  textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
-  lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
-  textAt(40,292,"NINTENDO NES",3);textAt(40,346,"MULTICART / NES",2);
-  textAt(20,434,"DIO40 / 16MB / SD + FLASH",2,ACC);
+ home=true;detail=false;unsigned counts[3]={0,0,0};
+ for(const auto& g:builtins)counts[g.nes?1:0]++;
+ for(unsigned i=0;i<private_rom_count();i++)counts[private_rom_md(i)?2:1]++;
+ RetroUI::home(lcd,counts);
 }
 static void menu(){
-  home=false;
-  lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 018":nesMode?"NES / BUILD 018":"GAME BOY / BUILD 018",2);
-  button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
-  if(mdMode){textAt(18,81,status.substring(0,22),2,ACC);button(308,72,158,38,mdModes[mdVideoMode]);}
-  else textAt(18,81,status,2,ACC);
-  for(size_t i=0;i<6&&page*6+i<paths.size();i++){
-    int y=116+i*48;
-    lcd.fillRoundRect(14,y,452,42,5,CARD);
-    String p=paths[page*6+i];p=(p.startsWith("@")||p.startsWith("#"))?p.substring(1)+" [FLASH]":p.substring(p.lastIndexOf('/')+1);
-    textAt(24,y+12,p.substring(0,34),2);
-  }
-  button(14,420,110,45,"PREV");button(145,420,170,45,"+ SD ROMS");button(345,420,121,45,"NEXT");
+ home=false;detail=false;int sys=systemId();const auto&t=RetroUI::themes[sys];
+ RetroUI::bg(lcd,sys);
+ RetroUI::button(lcd,14,10,94,48,"HOME",t);
+ RetroUI::text(lcd,122,15,t.name,3,t.ink);
+ RetroUI::text(lcd,122,43,String(t.bits)+" / "+paths.size()+" JUEGOS",2,t.muted);
+ RetroUI::text(lcd,16,72,status.substring(0,36),1,t.muted);
+ for(size_t i=0;i<4&&page*4+i<paths.size();i++){
+  int y=92+i*80;const String& p=paths[page*4+i];String n=displayName(p);
+  lcd.fillRoundRect(14,y,452,72,7,t.card);lcd.drawRoundRect(14,y,452,72,7,t.edge);
+  RetroUI::cart(lcd,27,y+8,54,56,sys,RetroUI::seed(n));
+  RetroUI::text(lcd,94,y+12,n.substring(0,29),2,t.ink);
+  RetroUI::text(lcd,94,y+40,String(t.bits)+" / "+origin(p),2,t.muted);
+  RetroUI::text(lcd,437,y+27,">",2,t.ink);
+ }
+ RetroUI::button(lcd,14,424,92,48,"PREV",t);
+ RetroUI::button(lcd,119,424,242,48,"+ SD ROMS",t);
+ RetroUI::button(lcd,374,424,92,48,"NEXT",t);
+}
+static void detailUI(){
+ if(selected>=paths.size()){menu();return;}
+ detail=true;home=false;int sys=systemId();const auto&t=RetroUI::themes[sys];const String& p=paths[selected];String n=displayName(p);
+ RetroUI::bg(lcd,sys);RetroUI::button(lcd,14,10,100,48,"BACK",t);
+ RetroUI::text(lcd,128,20,t.name,3,t.ink);
+ lcd.fillRoundRect(16,70,448,202,8,t.card);lcd.drawRoundRect(16,70,448,202,8,t.edge);
+ RetroUI::cart(lcd,161,79,158,162,sys,RetroUI::seed(n));
+ RetroUI::center(lcd,240,252,"CARTRIDGE / ORIGINAL ART",1,t.muted);
+ RetroUI::text(lcd,20,286,n.substring(0,24),3,t.ink);
+ if(n.length()>24)RetroUI::text(lcd,20,313,n.substring(24,54),2,t.ink);
+ size_t bytes=romSize(p);
+ RetroUI::text(lcd,20,340,String(t.bits)+" / "+origin(p)+(bytes?" / "+String((unsigned)(bytes/1024))+" KiB":""),2,t.muted);
+ RetroUI::button(lcd,16,369,150,48,layoutNames[layoutMode],t);
+ if(mdMode)RetroUI::button(lcd,178,369,150,48,mdModes[mdVideoMode],t);
+ RetroUI::button(lcd,16,426,448,48,"JUGAR",t,true);
 }
 static void gameUI(){
-  lcd.fillScreen(BG);
-  button(10,8,64,45,"EXIT");
-  if(mdMode)textAt(8,65,mdModes[mdVideoMode],2,ACC);
-  button(64,310,56,48,"UP");button(8,365,56,48,"LT");
-  button(64,420,56,48,"DN");button(120,365,56,48,"RT");
-  button(190,426,102,42,mdMode?"C":"SELECT");button(300,426,100,42,"START");
-  button(335,355,62,60,"B");button(407,320,64,60,"A");
+ lcd.fillScreen(0);GameVideo::reset();overlay=false;overlayArmed=false;launchRelease=true;overlayMs=0;
 }
 static void releaseGame(){markPhase(0);AsyncVideo::drain();if(mdMode){md_diag();md_stop();}else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
@@ -186,7 +211,7 @@ static bool load(const String &p){
   perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 018 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 019 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -203,7 +228,7 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  private_rom_init();nesMode=true;scan();menu();
+  private_rom_init();RetroUI::splash(lcd);delay(700);homeUI();
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -212,38 +237,39 @@ void loop(){
   if(playing)markPhase(1);
   pollTouch();
   if(!playing){
-    if(npoints&&!wasDown){
-      Point p=points[0];
-      Serial.printf("TOUCH x=%u y=%u home=%u nes=%u\n",p.x,p.y,home,nesMode);
-      if(home){
-        if(hit(p,20,110,440,135)||hit(p,20,262,440,135)){mdMode=false;nesMode=p.y>=262;scan();menu();}
-      }else if(hit(p,206,0,76,50)){mdMode=false;nesMode=false;scan();menu();}
-      else if(hit(p,292,0,82,50)){mdMode=false;nesMode=true;scan();menu();}
-      else if(hit(p,384,0,96,50)){mdMode=true;nesMode=false;scan();menu();}
-      else if(mdMode&&hit(p,308,72,158,38)){mdVideoMode=(mdVideoMode+1)%4;Serial.printf("MD next launch video=%s\n",mdModes[mdVideoMode]);menu();}
-      else if(hit(p,14,420,110,45)){if(page)page--;menu();}
-      else if(hit(p,145,420,170,45)){scan(true);menu();}
-      else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}
-      else if(p.y>=116&&p.y<404){
-        size_t i=page*6+(p.y-116)/48;
-        if(i<paths.size()&&!load(paths[i]))menu();
+    if(npoints){if(!wasDown)gestureStart=points[0];gestureEnd=points[0];}
+    if(!npoints&&wasDown){
+      Point p=gestureStart;int dy=(int)gestureEnd.y-(int)p.y;int dx=(int)gestureEnd.x-(int)p.x;
+      if(home){if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=78&&p.y<434){int s=(p.y-78)/122;if(s<3&&(p.y-78)%122<112){mdMode=s==2;nesMode=s==1;scan();menu();}}}
+      else if(detail){
+        if(abs(dy)<36&&abs(dx)<36){
+          if(hit(p,14,10,100,48))menu();
+          else if(hit(p,16,369,150,48)){layoutMode=(layoutMode+1)%3;detailUI();}
+          else if(mdMode&&hit(p,178,369,150,48)){mdVideoMode=(mdVideoMode+1)%4;detailUI();}
+          else if(hit(p,16,426,448,48)){const auto&t=RetroUI::themes[systemId()];RetroUI::bg(lcd,systemId());RetroUI::center(lcd,240,210,"CARGANDO...",3,t.ink);if(!load(paths[selected]))menu();}
+        }
+      }else if(abs(dy)>55&&abs(dy)>abs(dx)){
+        if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;menu();
+      }else if(abs(dy)<36&&abs(dx)<36){
+        if(hit(p,14,10,94,48))homeUI();
+        else if(hit(p,14,424,92,48)){if(page)page--;menu();}
+        else if(hit(p,119,424,242,48)){scan(true);menu();}
+        else if(hit(p,374,424,92,48)){if((page+1)*4<paths.size())page++;menu();}
+        else if(p.x>=14&&p.x<466&&p.y>=92&&p.y<404&&(p.y-92)%80<72){size_t i=page*4+(p.y-92)/80;if(i<paths.size()){selected=i;detailUI();}}
       }
     }
     wasDown=npoints>0;delay(12);return;
   }
   uint8_t keys=0;
-  for(int i=0;i<npoints;i++){
-    Point p=points[i];
-    if(hit(p,10,8,64,45)){releaseGame();status="Juego cerrado";menu();wasDown=true;return;}
-    if(hit(p,407,320,64,60))keys|=1;
-    if(hit(p,335,355,62,60))keys|=2;
-    if(hit(p,190,426,102,42))keys|=4;
-    if(hit(p,300,426,100,42))keys|=8;
-    if(hit(p,120,365,56,48))keys|=16;
-    if(hit(p,8,365,56,48))keys|=32;
-    if(hit(p,64,310,56,48))keys|=64;
-    if(hit(p,64,420,56,48))keys|=128;
-  }
+  bool exit=false;
+  if(launchRelease){if(!npoints)launchRelease=false;}
+  else if(npoints){
+    overlayMs=millis();
+    if(!overlay){overlay=true;overlayArmed=false;}
+    else if(overlayArmed){for(int i=0;i<npoints;i++)keys|=GameVideo::input(points[i].x,points[i].y,mdMode,exit);}
+  }else if(overlay){overlayArmed=true;if(millis()-overlayMs>=3000){overlay=false;overlayArmed=false;}}
+  if(exit){releaseGame();status="Juego cerrado";menu();wasDown=true;gestureStart=gestureEnd={0,0};return;}
+  const GameVideo::Options videoOptions{layoutMode,overlay,mdMode};
   const uint32_t period=mdMode?md_period():nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
   const bool due=mdSeq++%mdDiv==0;
@@ -263,15 +289,14 @@ void loop(){
       if(v&&pal){
         if(async){
           if(mdMode&&md_video_can_flip()){
-            if(AsyncVideo::submitBorrowed(v,pal,w,h,pitch)){
+            if(AsyncVideo::submitBorrowed(v,pal,w,h,pitch,videoOptions)){
               md_video_flip();queuedFrames++;borrowedFrames++;
             }else droppedFrames++;
-          }else if(AsyncVideo::submit(v,pal,w,h,pitch))queuedFrames++;else droppedFrames++;
+          }else if(AsyncVideo::submit(v,pal,w,h,pitch,videoOptions))queuedFrames++;else droppedFrames++;
         }
-        else {if(w!=shownW||h!=shownH){lcd.fillRect(80,10,320,288,BG);shownW=w;shownH=h;}
-          lcd.drawIndexedBitmap((480-w)/2,10+(288-h)/2,v,pal,w,h,pitch-w);}
+        else GameVideo::draw(lcd,v,pal,nullptr,w,h,pitch,videoOptions);
       }
-    }else lcd.draw16bitRGBBitmap(80,10,frame,320,288);
+    }else GameVideo::draw(lcd,nullptr,nullptr,frame,320,288,320,videoOptions);
     mdDrawUs+=micros()-t;if(!async)perfShown++;
   }
   lastPresented=present;
