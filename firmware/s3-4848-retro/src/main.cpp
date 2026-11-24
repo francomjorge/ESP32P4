@@ -45,7 +45,9 @@ static bool playing=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
 static constexpr unsigned frameDiv=2;
-static unsigned frameSeq=0;
+static unsigned frameSeq=0,nextPresent=0;
+static uint32_t imageHash=0,imageChanges=0,imageSamples=0;
+static uint8_t diagKeys=0;
 static uint32_t queuedFrames=0,droppedFrames=0;
 static uint32_t frameDeadline=0;
 static int shownW=0,shownH=0;
@@ -190,10 +192,10 @@ static bool load(const String &p){
  if(err){releaseGame();status="Error core: "+String(err);return false;}
  Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
  Serial.printf("MEM ACTIVE heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
- perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=0;
+ perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=nextPresent=0;imageHash=imageChanges=imageSamples=0;diagKeys=0;
  queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);
  playing=true;gameUI();maxWork=0;markPhase(1);
- Serial.printf("RUN BUILD 026 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
+ Serial.printf("RUN BUILD 027 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
  frameDeadline=micros();return true;
 }
 void setup(){
@@ -210,10 +212,10 @@ void setup(){
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
-  Serial.println("BOOT 026 private ROM init");private_rom_init();
-  Serial.printf("BOOT 026 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 026 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 026 splash ready / waiting touch");
+  Serial.println("BOOT 027 private ROM init");private_rom_init();
+  Serial.printf("BOOT 027 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 027 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 027 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -223,7 +225,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 026 home begin");homeUI();Serial.println("BOOT 026 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 027 home begin");homeUI();Serial.println("BOOT 027 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -260,13 +262,22 @@ void loop(){
   if(exit){releaseGame();status="Juego cerrado";menu();wasDown=true;gestureStart=gestureEnd={0,0};return;}
   const GameVideo::Options videoOptions{layoutMode,overlay};
   const uint32_t period=nesMode?16667:16743;
-  const bool due=frameSeq++%frameDiv==0;
+  const bool due=(int32_t)(frameSeq-nextPresent)>=0;
+  frameSeq++;
   const bool async=AsyncVideo::enabled();
   const bool present=due&&(!async||AsyncVideo::ready());
+  // Retry on the very next guest frame when LCD is busy, not another fixed pair.
   if(due&&!present)droppedFrames++;
+  if(present)nextPresent=frameSeq+frameDiv-1;
+  diagKeys=keys;
   markPhase(2);uint32_t t=micros();
   if(nesMode)nes_core_frame(keys,present);else core_frame(keys,present);
   coreUs+=micros()-t;
+  // Sparse independent guest image signature: diagnose apparent freezes vs LCD stalls.
+  if(nesMode){int dw,dh,dp;uint16_t* dpal;uint8_t* pix=nes_core_video(&dw,&dh,&dp,&dpal);
+   if(pix&&dpal){uint32_t hash=2166136261u;for(int yy=0;yy<dh;yy+=16)for(int xx=0;xx<dw;xx+=16)hash=(hash^dpal[pix[yy*dp+xx]])*16777619u;
+    if(imageSamples&&hash!=imageHash)imageChanges++;imageHash=hash;imageSamples++;}
+  }
   markPhase(3);
   if(present){
     t=micros();int w,h,pitch;uint16_t *pal;
@@ -286,6 +297,8 @@ void loop(){
     if(async)perfShown=workerCount;
     Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,(unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
     Serial.printf("VIDEO PERF core=%u us lcd=%u us submit=%u us fixed_div=%u queued=%u dropped=%u maxWork=%u\n",(unsigned)(coreUs/perfFrames),(unsigned)(async?(workerCount?workerUs/workerCount:0):(perfShown?drawUs/perfShown:0)),(unsigned)(queuedFrames?drawUs/queuedFrames:0),frameDiv,queuedFrames,droppedFrames,maxWork);
+    if(nesMode)Serial.printf("NES IMAGE samples=%u changes=%u hash=%08x keys=%02x\n",imageSamples,imageChanges,imageHash,diagKeys);
+    imageSamples=imageChanges=0;
     queuedFrames=droppedFrames=coreUs=drawUs=maxWork=0;
     perfStart=millis();perfFrames=perfShown=perfWork=perfOver=0;
   }

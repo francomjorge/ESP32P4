@@ -4,6 +4,7 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <string.h>
 #include "game_video.h"
 // One immutable queued frame. LCD belongs exclusively to worker during a job.
@@ -33,7 +34,9 @@ static void worker(void *){
 static bool begin(Arduino_RGB_Display& lcd,uint16_t background){
   if(task)return true;
   display=&lcd;bg=background;
-  snapshot=(uint8_t*)heap_caps_malloc(256*240,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+  snapshot=(uint8_t*)heap_caps_malloc(256*240,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+  if(!snapshot)snapshot=(uint8_t*)heap_caps_malloc(256*240,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+  Serial.printf("LCD snapshot=%s\n",snapshot?(esp_ptr_internal(snapshot)?"INTERNAL":"PSRAM"):"FAIL");
   idle=xSemaphoreCreateBinary();
   if(!snapshot||!idle){free(snapshot);snapshot=nullptr;if(idle)vSemaphoreDelete(idle);idle=nullptr;return false;}
   xSemaphoreGive(idle);

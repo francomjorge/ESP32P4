@@ -12,7 +12,8 @@ static uint8_t input(int x,int y,bool& exit){
  uint8_t v=0;for(const auto& k:keys){if(hit(k,x,y)){if(!k.bit)exit=true;else v|=k.bit;}}return v;
 }
 // Only the display owner calls these routines. Never write into guest framebuffers.
-static uint16_t strip[480*8];
+static constexpr int STRIP_ROWS=16;
+static uint16_t strip[480*STRIP_ROWS];
 static uint16_t xmap[480],ymap[480],scaledRow[480];
 static int mapSW=0,mapSH=0,mapW=0,mapH=0;
 static uint8_t oldLayout=255;
@@ -26,17 +27,49 @@ static void geometry(int sw,int sh,uint8_t layout,int& x,int& y,int& w,int& h){
  else{h=480;w=sw*480/sh;}
  x=(480-w)/2;y=(480-h)/2;
 }
-static void tint(const Key& k,int dx,int dy,int dw,int rows){
- const int x0=max(dx,k.x),x1=min(dx+dw,k.x+k.w);
- const int y0=max(dy,k.y),y1=min(dy+rows,k.y+k.h);
- if(x0>=x1||y0>=y1)return;
- for(int y=y0;y<y1;y++){uint16_t* p=strip+(y-dy)*dw+x0-dx;
-  for(int x=x0;x<x1;x++,p++)*p=(*p&0xf7deu)>>1;
- }
+// Compose every control into the same RGB strip as the game. No later LCD
+// primitive calls; black margins and disappearing controls are redrawn too.
+// Five-by-seven fixed font: only characters actually used by touch keys.
+static const uint8_t* glyph(char c){
+ static const uint8_t g[][7]={
+ {14,17,17,31,17,17,17}, // A
+ {30,17,17,30,17,17,30}, // B
+ {31,16,16,30,16,16,31}, // E
+ {31,4,4,4,4,4,31}, // I
+ {16,16,16,16,16,16,31}, // L
+ {30,17,17,30,20,18,17}, // R
+ {15,16,16,14,1,1,30}, // S
+ {31,4,4,4,4,4,4}, // T
+ {17,17,10,4,10,17,17}, // X
+ {4,14,21,4,4,4,4}, // ^
+ {4,4,4,4,21,14,4}, // v
+ {4,8,16,31,16,8,4}, // <
+ {4,2,1,31,1,2,4} // >
+ };
+ static const char names[]="ABEILRSTX^v<>";
+ for(unsigned i=0;i<sizeof(names)-1;i++)if(c==names[i])return g[i];
+ return nullptr;
 }
-static void drawKey(Arduino_RGB_Display& lcd,const Key& k){
- lcd.drawRoundRect(k.x,k.y,k.w,k.h,8,0xdedf);
- lcd.setTextSize(2);lcd.setTextColor(0xffff);lcd.setCursor(k.x+(k.w-12*strlen(k.label))/2,k.y+(k.h-16)/2);lcd.print(k.label);
+static void compositeKey(const Key& k,int top,int rows){
+ const int y0=max(top,k.y),y1=min(top+rows,k.y+k.h);
+ if(y0>=y1)return;
+ const int len=(int)strlen(k.label),tx=k.x+(k.w-(len*12-2))/2,ty=k.y+(k.h-14)/2;
+ for(int y=y0;y<y1;y++){
+  uint16_t* row=strip+(y-top)*480;
+  for(int x=k.x;x<k.x+k.w;x++){
+   int lx=x-k.x,ly=y-k.y;
+   // clipped corners, two-pixel outline, half-bright translucent interior.
+   if((lx<4||lx>=k.w-4)&&(ly<4||ly>=k.h-4))continue;
+   bool border=lx<2||lx>=k.w-2||ly<2||ly>=k.h-2;
+   bool letter=false;
+   if(y>=ty&&y<ty+14&&x>=tx&&x<tx+len*12){
+    int col=(x-tx)%12;
+    const uint8_t* bits=glyph(k.label[(x-tx)/12]);
+    if(bits&&col<10)letter=(bits[(y-ty)/2]&(1u<<(4-col/2)))!=0;
+   }
+   row[x]=(border||letter)?0xffff:((row[x]&0xf7deu)>>1);
+  }
+ }
 }
 static void scaleIndexed(uint16_t* dst,const uint8_t* src,const uint16_t* pal,int sw,int w){
  if(sw==160&&w==480){for(int j=0;j<160;j++){uint16_t c=pal[src[j]];dst[3*j]=dst[3*j+1]=dst[3*j+2]=c;}}
@@ -59,28 +92,29 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
   for(int j=0;j<h;j++)ymap[j]=(uint32_t)j*sh/h;
   mapSW=sw;mapSH=sh;mapW=w;mapH=h;
  }
+ // When overlay is visible, compose a complete 480-wide image including margins.
+ // Without overlay, retain the same safe library transfer and narrow FIT/NATIVE.
+ const int outX=o.overlay?0:x,outY=o.overlay?0:y;
+ const int outW=o.overlay?480:w,outH=o.overlay?480:h;
  int prev=-1;
- for(int top=0;top<h;top+=8){
-  int rows=min(8,h-top);
+ for(int top=0;top<outH;top+=STRIP_ROWS){
+  int rows=min(STRIP_ROWS,outH-top);
   for(int row=0;row<rows;row++){
-   int sy=ymap[top+row];uint16_t* dst=strip+row*w;
-   if(!o.overlay&&!rgb){
-    if(sy!=prev)scaleIndexed(dst,idx+sy*pitch,pal,sw,w);
-    else memcpy(dst,row?dst-w:scaledRow,w*2);
-    if(row==rows-1)memcpy(scaledRow,dst,w*2);
+   int screenY=outY+top+row;
+   uint16_t* dst=strip+row*outW;
+   if(screenY<y||screenY>=y+h){memset(dst,0,outW*2);continue;}
+   if(o.overlay&&w<480){memset(dst,0,outW*2);dst+=x;}
+   int sy=ymap[screenY-y];
+   if(sy!=prev){
+    if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
+    else scaleIndexed(scaledRow,idx+sy*pitch,pal,sw,w);
     prev=sy;
-   }else{
-    if(sy!=prev){
-     if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
-     else scaleIndexed(scaledRow,idx+sy*pitch,pal,sw,w);
-     prev=sy;
-    }
-    memcpy(dst,scaledRow,w*2);
    }
+   memcpy(dst,scaledRow,w*2);
   }
-  if(o.overlay){for(const auto& k:keys)tint(k,x,y+top,w,rows);}
-  lcd.draw16bitRGBBitmap(x,y+top,strip,w,rows);
+  if(o.overlay)for(const auto& k:keys)compositeKey(k,top,rows);
+  lcd.draw16bitRGBBitmap(outX,outY+top,strip,outW,rows);
  }
- if(o.overlay){for(const auto& k:keys)drawKey(lcd,k);}
+}
 }
 }

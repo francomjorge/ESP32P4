@@ -109,3 +109,6 @@ Use exact MD ROM byte count plus four 0xff guard bytes instead of 4 MiB + 4. Aud
 
 ## Build 026 — NES library expansion
 Based on 025. Allow two additional private NES cartridge names, Donkey Kong Classics and Tetris; no emulation, UI, clock, partition, or render changes. ROM contents remain private and are not committed. Game Boy unchanged.
+
+## Build 027 — overlay compositor / presentation recovery
+025 physical NES Mario log: 59.8–60.3 emu FPS, ~15 completed draws/s, 32–40 ms LCD, ~45 dropped attempts per 3 s, no late guest frames. User reports transparent touch control artifacts and apparent freezes on stones in Adventure Island (exact cartridge/scene unconfirmed). All overlay borders/text now composed into RGB strips together with game; no post-frame LCD primitives; margins included when overlay active. 16-row strips halve draw calls; immutable indexed snapshot prefers internal SRAM, fallback PSRAM. Retry presentation on next guest frame if worker busy, minimum spacing two guest frames, no skipped NES emulation. Sparse image signature diagnostics independent of LCD (not proof of CPU progress). Keep 026 ROM allowlist and unchanged NES/GB cores, no clock/pins/partition changes. Single active scanout framebuffer remains, so tearing is not ruled out; hardware validation required. No new ROM files committed.
