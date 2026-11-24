@@ -25,6 +25,7 @@ static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,mdMode=false,home=true;
+static bool mdTurbo=false;
 static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
@@ -105,7 +106,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 013 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 014 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -115,9 +116,10 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 013":nesMode?"NES / BUILD 013":"GAME BOY / BUILD 013",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 014":nesMode?"NES / BUILD 014":"GAME BOY / BUILD 014",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
-  textAt(18,81,status,2,ACC);
+  if(mdMode){textAt(18,81,status.substring(0,22),2,ACC);button(308,72,158,38,mdTurbo?"Z80 OFF":"Z80 ON");}
+  else textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
     lcd.fillRoundRect(14,y,452,42,5,CARD);
@@ -161,6 +163,7 @@ static bool load(const String &p){
   else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||(!nesMode&&!mdMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
   if(ram)memset(ram,0xFF,128*1024);if(frame)memset(frame,0,320*288*sizeof(uint16_t));
+  if(mdMode)md_set_z80(!mdTurbo);
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
@@ -199,6 +202,7 @@ void loop(){
       }else if(hit(p,206,0,76,50)){mdMode=false;nesMode=false;scan();menu();}
       else if(hit(p,292,0,82,50)){mdMode=false;nesMode=true;scan();menu();}
       else if(hit(p,384,0,96,50)){mdMode=true;nesMode=false;scan();menu();}
+      else if(mdMode&&hit(p,308,72,158,38)){mdTurbo=!mdTurbo;Serial.printf("MD next launch Z80=%s\n",mdTurbo?"OFF":"ON");menu();}
       else if(hit(p,14,420,110,45)){if(page)page--;menu();}
       else if(hit(p,145,420,170,45)){scan(true);menu();}
       else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}

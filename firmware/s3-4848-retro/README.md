@@ -70,3 +70,6 @@ Golden Axe 011 measured 55.5–58.2 emulation fps, 14–15 displayed fps, LCD wo
 
 ## Build 013 — measured frame budget
 012 hardware log confirms 33–34 us zero-copy submission, no dropped jobs, 59.6 emu fps / 20 displayed fps in Golden Axe first window. Keep 012 as experimental-s3-012. Sega-only controller measures rendered vs skipped frame cost, predicts budgets for divisor 2/3/4, promotes gradually when sustained headroom exists, demotes on slow windows. VDP graphics translation unit O3 A/B experiment, CPU/bus/Z80 remain O2. NES/GB pacing and panel setup unchanged. Target 60 emu FPS with 20–30 displayed, no physical claims until validation.
+
+## Build 014 — Z80 A/B performance mode
+013 hardware log: 57.1–60.6 emu FPS, 14.3–15.3 displayed, 35–36 us submit; 30 FPS predicted average cost 18–20 ms. Preserve 013 as experimental-s3-013. Add SEGA library Z80 ON/OFF button, default ON. Selection takes effect only when opening a game, never changes CPU configuration during gameplay. OFF uses upstream Retro-Go style large Z80 clock sentinel and omits scheduled Z80 slices; this experimental mode can break games or cause hangs, so return to ON if any issue. Separate sampled 68k and explicit Z80 slice timing; 68k includes bus synchronization and instrumentation overhead. No change to video/panel/NES/GB/ROM data. No claim of improved performance until tested.

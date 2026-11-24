@@ -22,6 +22,9 @@ static uint8_t *video,*spareVideo;
 #define MD_VIDEO_BYTES (320*241+320)
 static int videoWidth=320,videoHeight=224;
 static bool active;
+static bool z80Enabled=true;
+static uint64_t profile68k,profileZ80;
+void md_set_z80(bool enabled){if(!active)z80Enabled=enabled;}
 static unsigned period=16667;
 void gwenesis_io_get_buttons(void){}
 SaveState* saveGwenesisStateOpenForRead(const char* f){(void)f;return 0;}
@@ -44,7 +47,8 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   load_cartridge(rom,bytes);
   power_on();reset_emulation();
   (void)frame;active=true;period=16667;
-  profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=0;
+  profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=profile68k=profileZ80=0;
+  printf("MD PROFILE Z80=%s\n",z80Enabled?"ON":"OFF (experimental)");
   printf("MD buffers VRAM=%p video=%p free_internal=%u\n",VRAM,video,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   return 0;
 }
@@ -61,16 +65,24 @@ void md_frame(uint8_t k,bool present){
   if(present)memset(video,0,320*241+320);
   gwenesis_vdp_set_buffer((unsigned short*)(video+160));
   gwenesis_vdp_render_config();
-  system_clock=0;zclk=0;
+  system_clock=0;zclk=z80Enabled?0:0x1000000;
   // Keep Z80 CPU active, mute sample synthesis for this first performance build.
   ym2612_clock=sn76489_clock=0x1000000;
   ym2612_index=sn76489_index=0;
   scan_line=0;
-  uint64_t begin=esp_timer_get_time(),vdp_us=0;
+  uint64_t begin=esp_timer_get_time(),vdp_us=0,cpu68_us=0,z80_us=0;
   const bool measure=(profileFrames%7==0);
   while(scan_line<lines){
-    m68k_run(system_clock+VDP_CYCLES_PER_LINE);
-    z80_run(system_clock+VDP_CYCLES_PER_LINE);
+    if(measure){
+      uint64_t t=esp_timer_get_time();
+      m68k_run(system_clock+VDP_CYCLES_PER_LINE);
+      uint64_t mid=esp_timer_get_time();
+      if(z80Enabled)z80_run(system_clock+VDP_CYCLES_PER_LINE);
+      cpu68_us+=mid-t;z80_us+=esp_timer_get_time()-mid;
+    }else{
+      m68k_run(system_clock+VDP_CYCLES_PER_LINE);
+      if(z80Enabled)z80_run(system_clock+VDP_CYCLES_PER_LINE);
+    }
     if(present&&scan_line<screen_height){
       if(measure){uint64_t t=esp_timer_get_time();gwenesis_vdp_render_line(scan_line);vdp_us+=esp_timer_get_time()-t;}
       else gwenesis_vdp_render_line(scan_line);
@@ -93,8 +105,8 @@ void md_frame(uint8_t k,bool present){
   }
   m68k.cycles-=system_clock;
   uint64_t core_us=esp_timer_get_time()-begin;
-  if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;if(present)profileDraws++;}
-  if(++profileFrames>=126){printf("GEN_PROF cpu=%u us vdp=%u us scale=%u us samples=%u drawn=%u\n",(unsigned)(profileCPU/18),(unsigned)(profileDraws?profileVDP/profileDraws:0),(unsigned)(profileDraws?profileScale/profileDraws:0),18,profileDraws);profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=0;}
+  if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;profile68k+=cpu68_us;profileZ80+=z80_us;if(present)profileDraws++;}
+  if(++profileFrames>=126){printf("GEN_PROF cpu=%u us vdp=%u us scale=%u us samples=%u drawn=%u\n",(unsigned)(profileCPU/18),(unsigned)(profileDraws?profileVDP/profileDraws:0),(unsigned)(profileDraws?profileScale/profileDraws:0),18,profileDraws);printf("MD CPU 68k=%u us z80=%u us mode=%s (68k includes bus sync)\n",(unsigned)(profile68k/18),(unsigned)(profileZ80/18),z80Enabled?"ON":"OFF");profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=profile68k=profileZ80=0;}
 }
 uint8_t *md_video(int *w,int *h,int *pitch,uint16_t **palette){
   *w=videoWidth;*h=videoHeight;*pitch=320;*palette=CRAM565;
