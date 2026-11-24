@@ -18,15 +18,34 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install platformio==6.1.18 esptool==4.9.0
+      - run: pip install platformio==6.1.18 esptool==5.0.1
       - run: curl -fL --retry 3 https://raw.githubusercontent.com/deltabeard/Peanut-GB/d0bcca771c83a2638c93a9ae61f3d51f226dc905/peanut_gb.h -o src/peanut_gb.h
+      - run: python tools/prepare_roms.py
+      - name: Install platform and fix esptool executable resolution
+        run: |
+          pio pkg install
+          python -m esptool version
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          import os
+          wrapper = Path("/tmp/prisma-esptool")
+          wrapper.write_text("#!/bin/sh\nexec " + sys.executable + ' -m esptool "$@"\n')
+          wrapper.chmod(0o755)
+          for p in (Path.home()/".platformio/platforms").glob("espressif32*/builder/main.py"):
+              s = p.read_text()
+              old = "esptool_binary_path = install_esptool()"
+              if old not in s:
+                  raise SystemExit("Unexpected platform builder: " + str(p))
+              p.write_text(s.replace(old, 'esptool_binary_path = "/tmp/prisma-esptool"'))
+          PY
       - run: pio run -e esp32-4848s040
       - name: Merge factory image
         run: |
           set -eux
           B=.pio/build/esp32-4848s040
           mkdir -p dist
-          python -m esptool --chip esp32s3 merge_bin --flash_size 16MB --flash_mode qio -o dist/PRISMA-RETRO-S3-001-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          python -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode qio -o dist/PRISMA-RETRO-S3-001-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
           cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-001-app.bin
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4

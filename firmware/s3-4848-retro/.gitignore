@@ -1,2 +1,5 @@
 .pio/
 src/peanut_gb.h
+
+src/builtin_roms.h
+dist/

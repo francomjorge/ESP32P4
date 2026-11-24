@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <vector>
 #include "gb_core.h"
+#include "builtin_roms.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -65,10 +66,11 @@ static bool hit(Point p,int x,int y,int w,int h){
 }
 static void scan(){
   paths.clear();page=0;
+  for(const auto &g:builtins)paths.push_back(String("@")+g.name);
   if(!sdOk){SD.end();sdOk=SD.begin(42,SPI,4000000);}
-  if(!sdOk){status="SD no detectada";return;}
+  if(!sdOk){status="4 juegos internos / sin SD";return;}
   File dir=SD.open("/roms/gb");
-  if(!dir||!dir.isDirectory()){status="Crear /roms/gb en SD";return;}
+  if(!dir||!dir.isDirectory()){status="4 juegos internos / sin carpeta SD";return;}
   for(File f=dir.openNextFile();f;f=dir.openNextFile()){
     if(!f.isDirectory()){
       String path=f.path();String lower=path;lower.toLowerCase();
@@ -76,7 +78,7 @@ static void scan(){
     }f.close();
   }
   dir.close();
-  std::sort(paths.begin(),paths.end(),[](const String&a,const String&b){return a.compareTo(b)<0;});
+  std::sort(paths.begin()+sizeof(builtins)/sizeof(builtins[0]),paths.end(),[](const String&a,const String&b){return a.compareTo(b)<0;});
   status=paths.empty()?"No hay ROM .gb":String(paths.size())+" juegos detectados";
 }
 static void menu(){
@@ -86,7 +88,7 @@ static void menu(){
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
     lcd.fillRoundRect(14,y,452,42,5,CARD);
-    String p=paths[page*6+i];p=p.substring(p.lastIndexOf('/')+1);
+    String p=paths[page*6+i];p=p.startsWith("@")?p.substring(1)+" [FLASH]":p.substring(p.lastIndexOf('/')+1);
     textAt(24,y+12,p.substring(0,34),2);
   }
   button(14,420,110,45,"PREV");button(145,420,170,45,"RESCAN");button(345,420,121,45,"NEXT");
@@ -101,13 +103,24 @@ static void gameUI(){
 }
 static void releaseGame(){free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
-  File f=SD.open(p,FILE_READ);
-  if(!f||f.size()<32768||f.size()>4*1024*1024){status="ROM invalida (32KB-4MB)";return false;}
-  const size_t bytes=f.size();
+  File f;
+  const BuiltinROM *internal=nullptr;
+  size_t bytes=0;
+  if(p.startsWith("@")){
+    for(const auto &g:builtins)if(p.substring(1)==g.name){internal=&g;break;}
+    if(!internal){status="ROM interna no encontrada";return false;}
+    bytes=internal->size;
+  }else{
+    f=SD.open(p,FILE_READ);
+    if(!f||f.size()<32768||f.size()>4*1024*1024){status="ROM invalida (32KB-4MB)";return false;}
+    bytes=f.size();
+  }
   rom=(uint8_t*)ps_malloc(bytes);ram=(uint8_t*)ps_malloc(128*1024);
   frame=(uint16_t*)ps_malloc(320*288*sizeof(uint16_t));
   if(!rom||!ram||!frame){releaseGame();status="Sin PSRAM suficiente";return false;}
-  size_t got=f.read(rom,bytes);f.close();
+  size_t got=bytes;
+  if(internal)memcpy(rom,internal->data,bytes);
+  else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||rom[0x143]==0xC0){releaseGame();status="ROM no compatible (solo DMG)";return false;}
   memset(ram,0xFF,128*1024);memset(frame,0,320*288*sizeof(uint16_t));
   int err=core_start(rom,bytes,ram,128*1024,frame);

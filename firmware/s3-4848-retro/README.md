@@ -2,18 +2,19 @@
 
 Target: Guition ESP32-4848S040C, ESP32-S3 N16R8. 480×480 RGB ST7701, GT911, 16 MB flash, 8 MB octal PSRAM. USB power only; disconnect any mains-powered relay assembly before connecting USB.
 
-This is a separate, initial Game Boy DMG emulator using the real Peanut-GB core, not a port of ESP-BOX-EMU yet. It is intended to validate the display, microSD and touch together before integrating other cores. Compilation and physical testing are pending until CI and board tests succeed. No ROMs supplied.
+This is a separate, initial Game Boy DMG emulator using the real Peanut-GB core, not a port of ESP-BOX-EMU yet. It is intended to validate the display, microSD and touch together before integrating other cores. Compilation and physical testing are pending until CI and board tests succeed. Four redistributable homebrew ROMs are generated and embedded in flash; no commercial ROMs are supplied.
 
 ## Build
 Fetch the pinned MIT-licensed header before compiling:
 ```sh
 curl -fL https://raw.githubusercontent.com/deltabeard/Peanut-GB/d0bcca771c83a2638c93a9ae61f3d51f226dc905/peanut_gb.h -o src/peanut_gb.h
+python tools/prepare_roms.py
 pio run
 ```
 GitHub Actions performs these steps and merges the bootloader, partition table and application into a BIN at offset 0x0 using PlatformIO's actual build metadata. Download the artifact from the Actions run only when successful. Keep a backup of the previous firmware. The image targets 16 MB flash; the merged file need not physically occupy 16 MB.
 
 ## Use
-Format microSD FAT32, place legally obtained or homebrew .gb ROMs in /roms/gb, boot and select a title. Multi-touch controls and EXIT are provided. DMG only, no sound or persistent saves in 001, no Wi-Fi or OTA. The menu lists up to 128 ROMs, size 32 KB–4 MB.
+The built-in games (2048, Breakout, TicTacToe, Gamepad Test) work without SD when firmware is validated. Their source licenses and SHA-256 manifest are included in the artifact. For additional games, format microSD FAT32, place legally obtained or homebrew .gb ROMs in /roms/gb, boot and select a title. Multi-touch controls and EXIT are provided. DMG only, no sound or persistent saves in 001, no Wi-Fi or OTA. The menu lists up to 128 ROMs, size 32 KB–4 MB.
 
 ## Hardware references
 - https://github.com/jantielens/esp32-macropad/blob/49fd9b060fa4feb8b472cc49dfa869103faabedf/docs/dev/esp32-4848s040.md
