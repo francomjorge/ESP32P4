@@ -16,13 +16,17 @@ extern unsigned char gwenesis_vdp_regs[0x20];
 extern unsigned short gwenesis_vdp_status, CRAM565[256];
 extern int screen_width,screen_height,hint_pending;
 int system_clock,scan_line;
-int16_t gwenesis_sn76489_buffer[1100],gwenesis_ym2612_buffer[1100];
+int16_t gwenesis_sn76489_buffer[2048],gwenesis_ym2612_buffer[2048];
 int sn76489_index,sn76489_clock,ym2612_index,ym2612_clock;
 static uint8_t *video,*spareVideo;
 #define MD_VIDEO_BYTES (320*241+320)
 static int videoWidth=320,videoHeight=224;
 static bool active;
-static bool z80Enabled=true;
+static bool z80Enabled=true,audioTest=true;
+static uint64_t audioSamples,audioAbsSum,audioEndUs;
+static unsigned audioPeak,audioFrames;
+static int16_t pcmMix[2048];
+void md_set_audio_test(bool enabled){if(!active)audioTest=enabled;}
 static uint64_t profile68k,profileZ80;
 void md_set_z80(bool enabled){if(!active)z80Enabled=enabled;}
 static unsigned period=16667;
@@ -48,7 +52,8 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   power_on();reset_emulation();
   (void)frame;active=true;period=16667;
   profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=profile68k=profileZ80=0;
-  printf("MD PROFILE Z80=%s\n",z80Enabled?"ON":"OFF (experimental)");
+  audioSamples=audioAbsSum=audioEndUs=0;audioPeak=audioFrames=0;
+  printf("MD PROFILE Z80=%s PCM=%s output=NONE\n",z80Enabled?"ON":"OFF",audioTest?"ON":"OFF");
   printf("MD buffers VRAM=%p video=%p free_internal=%u\n",VRAM,video,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   return 0;
 }
@@ -67,7 +72,7 @@ void md_frame(uint8_t k,bool present){
   gwenesis_vdp_render_config();
   system_clock=0;zclk=z80Enabled?0:0x1000000;
   // Keep Z80 CPU active, mute sample synthesis for this first performance build.
-  ym2612_clock=sn76489_clock=0x1000000;
+  ym2612_clock=sn76489_clock=audioTest?0:0x1000000;
   ym2612_index=sn76489_index=0;
   scan_line=0;
   uint64_t begin=esp_timer_get_time(),vdp_us=0,cpu68_us=0,z80_us=0;
@@ -103,9 +108,31 @@ void md_frame(uint8_t k,bool present){
     if(scan_line==screen_height+1)z80_irq_line(0);
     system_clock+=VDP_CYCLES_PER_LINE;
   }
+  if(audioTest){
+    uint64_t endStart=esp_timer_get_time();
+    // Same accurate register-write synchronization as Retro-Go; complete both chips to frame end.
+    ym2612_run(system_clock);
+    gwenesis_SN76489_run(system_clock);
+    int n=ym2612_index<sn76489_index?ym2612_index:sn76489_index;
+    if(n<0)n=0;if(n>2048)n=2048;
+    for(int i=0;i<n;i++){
+      int v=((int)gwenesis_ym2612_buffer[i]+(int)gwenesis_sn76489_buffer[i])/2;
+      pcmMix[i]=(int16_t)v;
+      unsigned mag=(unsigned)(v<0?-v:v);
+      if(mag>audioPeak)audioPeak=mag;
+      audioAbsSum+=mag;
+    }
+    audioSamples+=n;audioFrames++;
+    audioEndUs+=esp_timer_get_time()-endStart;
+  }
   m68k.cycles-=system_clock;
   uint64_t core_us=esp_timer_get_time()-begin;
   if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;profile68k+=cpu68_us;profileZ80+=z80_us;if(present)profileDraws++;}
+  if(audioFrames>=126){
+    printf("MD AUDIO PCM samples/frame=%u peak=%u meanabs=%u finalize_mix=%u us output=NONE\n",
+      (unsigned)(audioSamples/audioFrames),audioPeak,(unsigned)(audioSamples?audioAbsSum/audioSamples:0),(unsigned)(audioEndUs/audioFrames));
+    audioSamples=audioAbsSum=audioEndUs=0;audioPeak=audioFrames=0;
+  }
   if(++profileFrames>=126){printf("GEN_PROF cpu=%u us vdp=%u us scale=%u us samples=%u drawn=%u\n",(unsigned)(profileCPU/18),(unsigned)(profileDraws?profileVDP/profileDraws:0),(unsigned)(profileDraws?profileScale/profileDraws:0),18,profileDraws);printf("MD CPU 68k=%u us z80=%u us mode=%s (68k includes bus sync)\n",(unsigned)(profile68k/18),(unsigned)(profileZ80/18),z80Enabled?"ON":"OFF");profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=profile68k=profileZ80=0;}
 }
 uint8_t *md_video(int *w,int *h,int *pitch,uint16_t **palette){
