@@ -117,4 +117,3 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
  }
 }
 }
-}
