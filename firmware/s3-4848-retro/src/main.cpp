@@ -24,6 +24,8 @@ static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,home=true;
 static bool playing=false,sdOk=false,wasDown=false;
+static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
+static bool lastPresented=false;
 static size_t page=0;
 static String status;
 struct Point{uint16_t x,y;};
@@ -94,7 +96,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 004 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 005 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -104,7 +106,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA RETRO",3,ACC);
-  textAt(18,52,nesMode?"NES / BUILD 004B":"GAME BOY / BUILD 004B",2);
+  textAt(18,52,nesMode?"NES / BUILD 005":"GAME BOY / BUILD 005",2);
   button(280,8,86,38,"GB");button(376,8,90,38,"NES");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
@@ -152,10 +154,12 @@ static bool load(const String &p){
   int err=nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;
   playing=true;gameUI();return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
+  Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
   pinMode(38,OUTPUT);digitalWrite(38,LOW);
   pinMode(42,OUTPUT);digitalWrite(42,HIGH);
@@ -170,6 +174,7 @@ void setup(){
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
+  const uint32_t tickStart=micros();
   if(!addr){delay(100);return;}
   pollTouch();
   if(!playing){
@@ -203,10 +208,28 @@ void loop(){
     if(hit(p,64,310,56,48))keys|=64;
     if(hit(p,64,420,56,48))keys|=128;
   }
-  uint32_t start=micros();if(nesMode)nes_core_frame(keys);else core_frame(keys);
-  static unsigned count=0;
-  if((count++&1)==0)lcd.draw16bitRGBBitmap(80,10,frame,320,288);
-  uint32_t elapsed=micros()-start;
-  if(elapsed<16743)delay((16743-elapsed+999)/1000);
-  else delay(1);
+  const uint32_t period=nesMode?16667:16743;
+  // Present every frame when possible, alternate only after an expensive frame.
+  const bool present=!lastPresented || lastWork+500<period;
+  if(nesMode)nes_core_frame(keys,present);else core_frame(keys);
+  if(present){lcd.draw16bitRGBBitmap(80,10,frame,320,288);perfShown++;}
+  lastPresented=present;
+  lastWork=micros()-tickStart;
+  perfFrames++;perfWork+=lastWork;
+  if(lastWork>=period)perfOver++;
+  uint32_t elapsedMs=millis()-perfStart;
+  if(elapsedMs>=3000){
+    Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",
+      nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,
+      (unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,
+      (unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+    perfStart=millis();perfFrames=perfShown=perfWork=perfOver=0;
+  }
+  uint32_t elapsed=micros()-tickStart;
+  if(elapsed<period){
+    uint32_t remaining=period-elapsed;
+    if(remaining>2000)delay((remaining-1000)/1000);
+    elapsed=micros()-tickStart;
+    if(elapsed<period)delayMicroseconds(period-elapsed);
+  }else delay(1);
 }

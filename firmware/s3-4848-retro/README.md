@@ -43,3 +43,6 @@ Upstream is tied to ESP32-S3-BOX's display, audio and custom gamepad, including 
 
 ## Build 004
 Adds experimental iNES mappers 225 and 227, including 225 nibble RAM and 227 CHR write-protect; solder-pad menu selection is not emulated. Optional private ROM pack uses existing storage partition at 0x610000, no user ROMs in repository. Raw factory image DIO40. Physical validation pending. Storage partition must not be formatted or used for a filesystem when a private pack is installed.
+
+## Build 005 — performance experiment
+Preserves stable-s3-004b (user confirmed working). 240 MHz CPU build setting, frame pacing includes input/rendering, adaptive display skipping, optimized 320x288 NES scaler runs only when presenting. NES PPU still runs every frame. Serial PERF every 3 s reports emulated/presented FPS, work time, overruns and free memory. DIO40, panel settings, private storage layout and mappers unchanged. No physical performance claims until measured.
