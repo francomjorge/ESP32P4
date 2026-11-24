@@ -21,18 +21,11 @@ void nes_core_frame(uint8_t k, bool present){
   if(k&64)p|=NES_PAD_UP;if(k&128)p|=NES_PAD_DOWN;
   input_update(0,p);nes_emulate(true);
   if(!present)return;
-  // 4 source pixels -> 5 output pixels; 5 rows -> 6 rows.
-  // Same nearest-neighbor mapping as the original division-based scaler.
+  // Keep native RGB565 pixels; scale directly into the display's scanout.
   for(unsigned y=0;y<240;y++){
-    unsigned dsty=y+y/5+(y%5!=0);
-    uint8_t *line=NES_SCREEN_GETPTR(video,0,y);
-    uint16_t *dst=out+dsty*320;
-    for(unsigned x=0;x<256;x+=4){
-      uint16_t c0=palette[line[x]];
-      *dst++=c0;*dst++=c0;
-      *dst++=palette[line[x+1]];*dst++=palette[line[x+2]];*dst++=palette[line[x+3]];
-    }
-    if(y%5==0)memcpy(out+(dsty+1)*320,out+dsty*320,320*sizeof(uint16_t));
+    const uint8_t *line=NES_SCREEN_GETPTR(video,0,y);
+    uint16_t *dst=out+y*256;
+    for(unsigned x=0;x<256;x++)dst[x]=palette[line[x]];
   }
 }
 void nes_core_stop(void){

@@ -46,3 +46,6 @@ Adds experimental iNES mappers 225 and 227, including 225 nibble RAM and 227 CHR
 
 ## Build 005 — performance experiment
 Preserves stable-s3-004b (user confirmed working). 240 MHz CPU build setting, frame pacing includes input/rendering, adaptive display skipping, optimized 320x288 NES scaler runs only when presenting. NES PPU still runs every frame. Serial PERF every 3 s reports emulated/presented FPS, work time, overruns and free memory. DIO40, panel settings, private storage layout and mappers unchanged. No physical performance claims until measured.
+
+## Build 006 — fullscreen performance
+Confirmed stable 005 preserved in stable-s3-005. Default fullscreen 480x480 nearest-neighbor; FIT toggles square-pixel proportions. Touch controls and EXIT blended over live image. Native RGB565 buffers (NES 256x240, GB 160x144) scaled directly into existing Arduino RGB framebuffer using lookup tables and row reuse, with one explicit flush per presented frame. No extra fullscreen framebuffer. Mapper, DIO40, private partition layout and FPS diagnostics unchanged. Actual display FPS and tearing must be checked on device.

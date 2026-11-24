@@ -10,6 +10,7 @@
 #include "nes_core.h"
 #include <esp_partition.h>
 #include "private_roms.h"
+#include "fullscreen.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -26,6 +27,7 @@ static bool nesMode=false,home=true;
 static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
+static bool aspectFit=false, gameTouchArmed=false, modeHeld=false;
 static size_t page=0;
 static String status;
 struct Point{uint16_t x,y;};
@@ -96,7 +98,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 005 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 006 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -106,7 +108,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA RETRO",3,ACC);
-  textAt(18,52,nesMode?"NES / BUILD 005":"GAME BOY / BUILD 005",2);
+  textAt(18,52,nesMode?"NES / BUILD 006":"GAME BOY / BUILD 006",2);
   button(280,8,86,38,"GB");button(376,8,90,38,"NES");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
@@ -118,12 +120,9 @@ static void menu(){
   button(14,420,110,45,"PREV");button(145,420,170,45,"+ SD ROMS");button(345,420,121,45,"NEXT");
 }
 static void gameUI(){
+  Fullscreen::configure(nesMode,aspectFit);
   lcd.fillScreen(BG);
-  button(10,8,64,45,"EXIT");
-  button(64,310,56,48,"UP");button(8,365,56,48,"LT");
-  button(64,420,56,48,"DN");button(120,365,56,48,"RT");
-  button(190,426,102,42,"SELECT");button(300,426,100,42,"START");
-  button(335,355,62,60,"B");button(407,320,64,60,"A");
+  gameTouchArmed=false;modeHeld=false;
 }
 static void releaseGame(){if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
@@ -143,14 +142,15 @@ static bool load(const String &p){
     bytes=f.size();
   }
   rom=(uint8_t*)ps_malloc(bytes);ram=nesMode?nullptr:(uint8_t*)ps_malloc(128*1024);
-  frame=(uint16_t*)ps_malloc(320*288*sizeof(uint16_t));
+  const size_t pixels=nesMode?256*240:160*144;
+  frame=(uint16_t*)ps_malloc(pixels*sizeof(uint16_t));
   if(!rom||(!nesMode&&!ram)||!frame){releaseGame();status="Sin PSRAM suficiente";return false;}
   size_t got=bytes;
   if(privateIndex>=0){if(!private_rom_read(privateIndex,rom,bytes))got=0;}
   else if(internal)memcpy(rom,internal->data,bytes);
   else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||(!nesMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
-  if(ram)memset(ram,0xFF,128*1024);memset(frame,0,320*288*sizeof(uint16_t));
+  if(ram)memset(ram,0xFF,128*1024);memset(frame,0,pixels*sizeof(uint16_t));
   int err=nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
@@ -195,24 +195,27 @@ void loop(){
     }
     wasDown=npoints>0;delay(12);return;
   }
-  uint8_t keys=0;
-  for(int i=0;i<npoints;i++){
+  uint8_t keys=0;bool modeNow=false;
+  if(!npoints)gameTouchArmed=true;
+  if(gameTouchArmed)for(int i=0;i<npoints;i++){
     Point p=points[i];
-    if(hit(p,10,8,64,45)){releaseGame();status="Juego cerrado";menu();wasDown=true;return;}
-    if(hit(p,407,320,64,60))keys|=1;
-    if(hit(p,335,355,62,60))keys|=2;
-    if(hit(p,190,426,102,42))keys|=4;
-    if(hit(p,300,426,100,42))keys|=8;
-    if(hit(p,120,365,56,48))keys|=16;
-    if(hit(p,8,365,56,48))keys|=32;
-    if(hit(p,64,310,56,48))keys|=64;
-    if(hit(p,64,420,56,48))keys|=128;
+    if(Fullscreen::contains(p.x,p.y,Fullscreen::controls[0])){
+      releaseGame();status="Juego cerrado";menu();wasDown=true;return;
+    }
+    if(Fullscreen::contains(p.x,p.y,Fullscreen::controls[1]))modeNow=true;
+    for(unsigned j=2;j<sizeof(Fullscreen::controls)/sizeof(Fullscreen::controls[0]);j++)
+      if(Fullscreen::contains(p.x,p.y,Fullscreen::controls[j]))keys|=Fullscreen::controls[j].key;
   }
+  if(modeNow&&!modeHeld){
+    aspectFit=!aspectFit;Fullscreen::configure(nesMode,aspectFit);lastPresented=false;
+    Serial.printf("VIDEO mode=%s\n",aspectFit?"FIT":"FULL");
+  }
+  modeHeld=modeNow;
   const uint32_t period=nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
   const bool present=!lastPresented || lastWork+500<period;
-  if(nesMode)nes_core_frame(keys,present);else core_frame(keys);
-  if(present){lcd.draw16bitRGBBitmap(80,10,frame,320,288);perfShown++;}
+  if(nesMode)nes_core_frame(keys,present);else core_frame(keys,present);
+  if(present){Fullscreen::render(lcd.getFramebuffer(),frame,keys);lcd.flush(true);perfShown++;}
   lastPresented=present;
   lastWork=micros()-tickStart;
   perfFrames++;perfWork+=lastWork;
