@@ -33,7 +33,7 @@ static void worker(void *){
 static bool begin(Arduino_RGB_Display& lcd,uint16_t background){
   if(task)return true;
   display=&lcd;bg=background;
-  snapshot=(uint8_t*)heap_caps_malloc(320*240,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+  snapshot=(uint8_t*)heap_caps_malloc(256*240,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
   idle=xSemaphoreCreateBinary();
   if(!snapshot||!idle){free(snapshot);snapshot=nullptr;if(idle)vSemaphoreDelete(idle);idle=nullptr;return false;}
   xSemaphoreGive(idle);
@@ -45,20 +45,11 @@ static bool begin(Arduino_RGB_Display& lcd,uint16_t background){
 static bool enabled(){return task!=nullptr;}
 static bool ready(){return idle&&uxSemaphoreGetCount(idle)>0;}
 static bool submit(const uint8_t* src,const uint16_t* pal,int w,int h,int pitch,GameVideo::Options opts){
-  if(!src||!pal||w<1||w>320||h<1||h>240||pitch<w||!idle)return false;
+  if(!src||!pal||w<1||w>256||h<1||h>240||pitch<w||!idle)return false;
   if(xSemaphoreTake(idle,0)!=pdTRUE)return false;
   options=opts;width=w;height=h;
   for(int y=0;y<h;y++)memcpy(snapshot+y*w,src+y*pitch,w);
   jobPixels=snapshot;jobPitch=w;
-  memcpy(palette,pal,sizeof(palette));
-  xTaskNotifyGive(task);
-  return true;
-}
-// Caller guarantees that borrowed data is not overwritten until ready()/drain().
-static bool submitBorrowed(uint8_t* src,const uint16_t* pal,int w,int h,int pitch,GameVideo::Options opts){
-  if(!src||!pal||w<1||w>320||h<1||h>240||pitch<w||!idle)return false;
-  if(xSemaphoreTake(idle,0)!=pdTRUE)return false;
-  options=opts;width=w;height=h;jobPixels=src;jobPitch=pitch;
   memcpy(palette,pal,sizeof(palette));
   xTaskNotifyGive(task);
   return true;

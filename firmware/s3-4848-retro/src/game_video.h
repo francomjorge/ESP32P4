@@ -4,14 +4,12 @@
 #include <string.h>
 namespace GameVideo {
 enum Layout:uint8_t { FULL=0,FIT=1,NATIVE=2 };
-struct Options {uint8_t layout;bool overlay;bool sega;};
+struct Options {uint8_t layout;bool overlay;};
 struct Key {int x,y,w,h;const char* label;uint8_t bit;};
 static constexpr Key keys[]={{8,8,76,48,"EXIT",0},{65,293,62,62,"^",64},{5,355,62,62,"<",32},{65,417,62,58,"v",128},{125,355,62,62,">",16},{191,424,100,48,"SEL",4},{297,424,100,48,"START",8},{340,346,64,62,"B",2},{410,289,64,62,"A",1}};
-static constexpr Key segaC={410,365,64,56,"C",4};
 static bool hit(const Key& k,int x,int y){return x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h;}
-static uint8_t input(int x,int y,bool sega,bool& exit){
- uint8_t v=0;for(const auto& k:keys){if(sega&&k.bit==4)continue;if(hit(k,x,y)){if(!k.bit)exit=true;else v|=k.bit;}}
- if(sega&&hit(segaC,x,y))v|=4;return v;
+static uint8_t input(int x,int y,bool& exit){
+ uint8_t v=0;for(const auto& k:keys){if(hit(k,x,y)){if(!k.bit)exit=true;else v|=k.bit;}}return v;
 }
 // Only the display owner calls these routines. Never write into guest framebuffers.
 static uint16_t strip[480*8];
@@ -40,11 +38,9 @@ static void drawKey(Arduino_RGB_Display& lcd,const Key& k){
  lcd.drawRoundRect(k.x,k.y,k.w,k.h,8,0xdedf);
  lcd.setTextSize(2);lcd.setTextColor(0xffff);lcd.setCursor(k.x+(k.w-12*strlen(k.label))/2,k.y+(k.h-16)/2);lcd.print(k.label);
 }
-static void scaleIndexed(uint16_t* dst,const uint8_t* src,const uint16_t* pal,int sw,int w,bool sega){
- if(sega&&sw==320&&w==480){
-  // floor(x*320/480): A,A,B. Two sequential ROM-index reads per three output pixels.
-  for(int j=0;j<160;j++){uint16_t a=pal[src[2*j]],b=pal[src[2*j+1]];dst[3*j]=a;dst[3*j+1]=a;dst[3*j+2]=b;}
- }else for(int j=0;j<w;j++)dst[j]=pal[src[xmap[j]]];
+static void scaleIndexed(uint16_t* dst,const uint8_t* src,const uint16_t* pal,int sw,int w){
+ if(sw==160&&w==480){for(int j=0;j<160;j++){uint16_t c=pal[src[j]];dst[3*j]=dst[3*j+1]=dst[3*j+2]=c;}}
+ else for(int j=0;j<w;j++)dst[j]=pal[src[xmap[j]]];
 }
 static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal,const uint16_t* rgb,int sw,int sh,int pitch,Options o){
  if(sw<=0||sh<=0||sw>480||sh>480||pitch<sw||(!rgb&&(!idx||!pal)))return;
@@ -68,23 +64,23 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
   int rows=min(8,h-top);
   for(int row=0;row<rows;row++){
    int sy=ymap[top+row];uint16_t* dst=strip+row*w;
-   if(o.sega&&!o.overlay&&!rgb){
-    if(sy!=prev)scaleIndexed(dst,idx+sy*pitch,pal,sw,w,true);
+   if(!o.overlay&&!rgb){
+    if(sy!=prev)scaleIndexed(dst,idx+sy*pitch,pal,sw,w);
     else memcpy(dst,row?dst-w:scaledRow,w*2);
     if(row==rows-1)memcpy(scaledRow,dst,w*2);
     prev=sy;
    }else{
     if(sy!=prev){
      if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
-     else scaleIndexed(scaledRow,idx+sy*pitch,pal,sw,w,o.sega);
+     else scaleIndexed(scaledRow,idx+sy*pitch,pal,sw,w);
      prev=sy;
     }
     memcpy(dst,scaledRow,w*2);
    }
   }
-  if(o.overlay){for(const auto& k:keys)if(!o.sega||k.bit!=4)tint(k,x,y+top,w,rows);if(o.sega)tint(segaC,x,y+top,w,rows);}
+  if(o.overlay){for(const auto& k:keys)tint(k,x,y+top,w,rows);}
   lcd.draw16bitRGBBitmap(x,y+top,strip,w,rows);
  }
- if(o.overlay){for(const auto& k:keys)if(!o.sega||k.bit!=4)drawKey(lcd,k);if(o.sega)drawKey(lcd,segaC);}
+ if(o.overlay){for(const auto& k:keys)drawKey(lcd,k);}
 }
 }

@@ -10,9 +10,9 @@ static const uint8_t *rom_data;
 static size_t rom_size;
 static uint8_t *save_ram;
 static size_t save_size;
-static uint16_t *pixels;
+static uint8_t *pixels;
 static bool render_frame=true;
-static const uint16_t palette[4] = {0xE78C,0x9D29,0x4B45,0x1922};
+static uint16_t palette[256] = {0xE78C,0x9D29,0x4B45,0x1922};
 static uint8_t rom_read(struct gb_s *g, uint_fast32_t a) {
   (void)g; return a < rom_size ? rom_data[a] : 0xFF;
 }
@@ -27,12 +27,10 @@ static void core_error(struct gb_s *g, enum gb_error_e e, uint16_t address) {
 }
 static void lcd_line(struct gb_s *g, const uint8_t *line, uint_fast8_t y) {
   (void)g; if(y>=144||!render_frame) return;
-  uint16_t *a=pixels+(size_t)y*640, *b=a+320;
-  for(unsigned x=0;x<160;x++){
-    uint16_t c=palette[line[x]&3]; a[x*2]=a[x*2+1]=b[x*2]=b[x*2+1]=c;
-  }
+  uint8_t *dst=pixels+(size_t)y*160;
+  for(unsigned x=0;x<160;x++)dst[x]=line[x]&3;
 }
-int core_start(const uint8_t *rom, size_t bytes, uint8_t *ram, size_t ram_bytes, uint16_t *frame){
+int core_start(const uint8_t *rom, size_t bytes, uint8_t *ram, size_t ram_bytes, uint8_t *frame){
   memset(&gb,0,sizeof(gb));
   rom_data=rom; rom_size=bytes; save_ram=ram; save_size=ram_bytes; pixels=frame;
   int err=gb_init(&gb,rom_read,ram_read,ram_write,core_error,0);
@@ -43,3 +41,5 @@ int core_start(const uint8_t *rom, size_t bytes, uint8_t *ram, size_t ram_bytes,
   return 0;
 }
 void core_frame(uint8_t pressed,bool present){render_frame=present;gb.direct.joypad=(uint8_t)~pressed;gb_run_frame(&gb);}
+
+uint8_t *core_video(int *w,int *h,int *pitch,uint16_t **pal){*w=160;*h=144;*pitch=160;*pal=palette;return pixels;}
