@@ -21,9 +21,40 @@ python - <<'PY'
 from pathlib import Path
 p=Path("lib/gwenesis/src/bus/gwenesis_bus.c")
 s=p.read_text().replace("#ifdef RETRO_GO","#if 1 /* PRISMA: caller owns padded ROM */")
+assert s.count("unsigned char *ROM_DATA; // 68K Main Program (uncompressed)")==1
+s=s.replace("unsigned char *ROM_DATA; // 68K Main Program (uncompressed)","unsigned char *ROM_DATA; // 68K Main Program (uncompressed)\nunsigned int prisma_rom_size;")
+assert s.count("ROM_DATA = buffer;")==1
+s=s.replace("ROM_DATA = buffer;","ROM_DATA = buffer;\n    prisma_rom_size = (unsigned int)size;")
 p.write_text(s)
 p=Path("lib/gwenesis/src/cpus/M68K/m68k.h")
-s=p.read_text().replace("ROM_DATA[((A) ^ 1)]","ROM_DATA[(((A)&0x3fffff) ^ 1)]").replace("ROM_DATA[(A)]","ROM_DATA[((A)&0x3fffff)]")
+s=p.read_text()
+start=s.index("#define FETCH8ROM(A)")
+end=s.index("#if GNW_TARGET_MARIO",start)
+old=s[start:end]
+assert old.count("#define FETCH")==3 and "ROM_DATA[((A) ^ 1)]" in old
+# Preserve previous 4 MiB address masking and 0xff padding, now with only four physical guard bytes.
+# 16/32-bit reads may straddle the real end; guard bytes reproduce previous padded contents.
+s=s[:start]+"""extern unsigned int prisma_rom_size;
+static inline unsigned char prisma_fetch8(unsigned int a) {
+    a=(a&0x3fffffu)^1u;
+    return a<prisma_rom_size ? ROM_DATA[a] : 0xffu;
+}
+static inline unsigned short prisma_fetch16(unsigned int a) {
+    a&=0x3fffffu;
+    if(a>=prisma_rom_size)return 0xffffu;
+    unsigned short v; __builtin_memcpy(&v,ROM_DATA+a,2); return v;
+}
+static inline unsigned int prisma_fetch32(unsigned int a) {
+    a&=0x3fffffu;
+    if(a>=prisma_rom_size)return 0xffffffffu;
+    unsigned int v; __builtin_memcpy(&v,ROM_DATA+a,4);
+    return (v<<16)|(v>>16);
+}
+#define FETCH8ROM(A) prisma_fetch8((unsigned int)(A))
+#define FETCH16ROM(A) prisma_fetch16((unsigned int)(A))
+#define FETCH32ROM(A) prisma_fetch32((unsigned int)(A))
+
+"""+s[end:]
 p.write_text(s)
 # GCC 14 treats the upstream indexed-pixel pointer mismatch as an error.
 # The interface accepts uint16_t*, but its actual pixel format is uint8_t indices.

@@ -201,11 +201,13 @@ static bool load(const String &p){
     if(!f||f.size()<(mdMode?512:nesMode?16400:32768)||f.size()>4*1024*1024){status="ROM invalida (32KB-4MB)";return false;}
     bytes=f.size();
   }
-  Serial.printf("MEM BEFORE romBytes=%u romAlloc=%u heap=%u psram=%u\n",(unsigned)bytes,(unsigned)(mdMode?0x400004:bytes),(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
-  rom=(uint8_t*)ps_malloc(mdMode?0x400004:bytes);ram=(nesMode||mdMode)?nullptr:(uint8_t*)ps_malloc(128*1024);
+  if(mdMode&&(bytes<512||bytes>0x400000||(bytes&1))){status="ROM MD invalida";return false;}
+  const size_t romAlloc=bytes+(mdMode?4:0);
+  Serial.printf("MEM BEFORE romBytes=%u romAlloc=%u heap=%u psram=%u\n",(unsigned)bytes,(unsigned)romAlloc,(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+  rom=(uint8_t*)ps_malloc(romAlloc);ram=(nesMode||mdMode)?nullptr:(uint8_t*)ps_malloc(128*1024);
   frame=(nesMode||mdMode)?nullptr:(uint16_t*)ps_malloc(320*288*sizeof(uint16_t));
   if(!rom||(!nesMode&&!mdMode&&!ram)||(!nesMode&&!mdMode&&!frame)){releaseGame();status="Sin PSRAM suficiente";return false;}
-  if(mdMode)memset(rom,0xff,0x400004);
+  if(mdMode)memset(rom+bytes,0xff,4);
   size_t got=bytes;
   if(privateIndex>=0){if(!private_rom_read(privateIndex,rom,bytes))got=0;}
   else if(internal)memcpy(rom,internal->data,bytes);
@@ -220,7 +222,7 @@ static bool load(const String &p){
   perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 022 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 023 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -237,10 +239,10 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  Serial.println("BOOT 022 private ROM init");private_rom_init();
-  Serial.printf("BOOT 022 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 022 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 022 splash ready / waiting touch");
+  Serial.println("BOOT 023 private ROM init");private_rom_init();
+  Serial.printf("BOOT 023 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 023 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 023 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -250,7 +252,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 022 home begin");homeUI();Serial.println("BOOT 022 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 023 home begin");homeUI();Serial.println("BOOT 023 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -350,6 +352,8 @@ void loop(){
         Serial.printf("MD STABILITY mode=%s maxWork=%u us\n",mdModes[mdVideoMode],maxWork);
         maxWork=0;
         mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;
+      }else if(nesMode){
+        Serial.printf("NES CADENCE fixed divisor=%u dropped=%u\n",mdDiv,droppedFrames);
       }else if(!mdMode){
         if(fps<target-2){goodWindows=0;if(mdDiv<4)mdDiv++;}
         else if(fps>=target-0.5f && droppedFrames==0){if(++goodWindows>=5){if(mdDiv>2)mdDiv--;goodWindows=0;}}
