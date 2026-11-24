@@ -211,7 +211,7 @@ static bool load(const String &p){
   perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 019 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 020 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -228,7 +228,11 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  private_rom_init();RetroUI::splash(lcd);delay(700);homeUI();
+  Serial.println("BOOT 020 private ROM init");private_rom_init();
+  Serial.printf("BOOT 020 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 020 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 020 splash ok");delay(700);
+  Serial.println("BOOT 020 home begin");homeUI();Serial.println("BOOT 020 home ok");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
