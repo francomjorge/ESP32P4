@@ -106,3 +106,6 @@ Use exact MD ROM byte count plus four 0xff guard bytes instead of 4 MiB + 4. Aud
 
 ## Build 025 — 8-BIT only
 024 retained on experimental-s3-024. Exclude MD adapter and Gwenesis dependency from compilation, remove MD UI and SD runtime. NES four user cartridges and GB Tobu Tobu Girl DX only; locally repack four private ROMs (no private ROM bytes in repository). NES core unmodified, fixed divisor 2 retained. GB native indexed 160x144 framebuffer (23040 bytes vs 184320 RGB565), prefer internal RAM, palette padded to 256 entries for LCD worker. Both cores submit immutable snapshots to core 0. GB 3x horizontal scaling specialized, same nearest-neighbor algorithm; all guest logic executed at original timing. No panel clock/pins or flash config changes. Audio not yet implemented. Physical validation pending.
+
+## Build 026 — NES library expansion
+Based on 025. Allow two additional private NES cartridge names, Donkey Kong Classics and Tetris; no emulation, UI, clock, partition, or render changes. ROM contents remain private and are not committed. Game Boy unchanged.

@@ -99,7 +99,7 @@ static bool hit(Point p,int x,int y,int w,int h){
 // Fixed five-title benchmark library. No SD and no Mega Drive.
 static bool leanPrivate(unsigned i){
  const char* n=private_rom_name(i);
- return !private_rom_md(i)&&(!strcmp(n,"64-in-1")||!strcmp(n,"1200-in-1")||!strcmp(n,"Super Mario Bros.")||!strcmp(n,"Super Mario Bros. 3"));
+ return !private_rom_md(i)&&(!strcmp(n,"64-in-1")||!strcmp(n,"1200-in-1")||!strcmp(n,"Super Mario Bros.")||!strcmp(n,"Super Mario Bros. 3")||!strcmp(n,"Donkey Kong Classics")||!strcmp(n,"Tetris"));
 }
 static void scan(){
  paths.clear();page=0;
@@ -193,7 +193,7 @@ static bool load(const String &p){
  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=0;
  queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);
  playing=true;gameUI();maxWork=0;markPhase(1);
- Serial.printf("RUN BUILD 025 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
+ Serial.printf("RUN BUILD 026 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
  frameDeadline=micros();return true;
 }
 void setup(){
@@ -210,10 +210,10 @@ void setup(){
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
-  Serial.println("BOOT 025 private ROM init");private_rom_init();
-  Serial.printf("BOOT 025 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 025 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 025 splash ready / waiting touch");
+  Serial.println("BOOT 026 private ROM init");private_rom_init();
+  Serial.printf("BOOT 026 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 026 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 026 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -223,7 +223,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 025 home begin");homeUI();Serial.println("BOOT 025 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 026 home begin");homeUI();Serial.println("BOOT 026 home ok");}
     delay(12);return;
   }
   if(!playing){
