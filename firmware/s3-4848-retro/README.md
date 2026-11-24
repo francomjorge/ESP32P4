@@ -1,4 +1,4 @@
-# PRISMA RETRO / S3 — Build 002 (experimental)
+# PRISMA RETRO / S3 — Build 003 (experimental)
 
 Target: Guition ESP32-4848S040C, ESP32-S3 N16R8. 480×480 RGB ST7701, GT911, 16 MB flash, 8 MB octal PSRAM. USB power only; disconnect any mains-powered relay assembly before connecting USB.
 
@@ -13,6 +13,9 @@ bash tools/prepare_nes.sh
 pio run
 ```
 GitHub Actions performs these steps and merges the bootloader, partition table and application into a BIN at offset 0x0 using PlatformIO's actual build metadata. Download the artifact from the Actions run only when successful. Keep a backup of the previous firmware. The image targets 16 MB flash; the merged file need not physically occupy 16 MB.
+
+## Build 003 changes
+Boot directly to the Game Boy internal library; HOME opens system selector. SD scan only on request. Adds Tobu Tobu Girl Deluxe (MIT/CC BY 4.0, Tangram Games, music potato-tan) and Thwaite (GPL-3.0, Damian Yerrick); credits and licenses included. ROM counts and names logged to serial. CI asserts raw ESP image headers and DIO40 settings. Build 002 boot confirmed by user, ROM library issue not yet diagnosed on hardware.
 
 ## Use
 Built-in titles: Big2Small, 2048, Breakout, Gamepad Test (GB), Platformer and NES Hello (NES). SD folders /roms/gb and /roms/nes. No audio or persistent saves yet. NES iNES NTSC only for this first port. Licenses and source links in dist/sd-card/manifest.json; Nofrendo source in dist/sources. The Nofrendo core is LGPL-2.0 as specified by upstream headers; source is pinned and included. Big2Small is GPL-3.0; corresponding source available at https://github.com/mdsteele/big2small/tree/v1.0.0.

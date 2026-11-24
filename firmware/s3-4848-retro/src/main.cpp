@@ -66,10 +66,13 @@ static void button(int x,int y,int w,int h,const char *s){
 static bool hit(Point p,int x,int y,int w,int h){
   return p.x>=x&&p.x<x+w&&p.y>=y&&p.y<y+h;
 }
-static void scan(){
+static void scan(bool includeSD=false){
   paths.clear();page=0;
   for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
   size_t builtinCount=paths.size();
+  Serial.printf("ROM library %s: %u internal games\n",nesMode?"NES":"GB",(unsigned)builtinCount);
+  for(const auto &g:builtins)if(g.nes==nesMode)Serial.printf("  %s: %u bytes\n",g.name,(unsigned)g.size);
+  if(!includeSD){status=String(builtinCount)+" juegos internos";return;}
   if(!sdOk){SD.end();sdOk=SD.begin(42,SPI,4000000);}
   if(!sdOk){status=String(paths.size())+" internos / sin SD";return;}
   File dir=SD.open(nesMode?"/roms/nes":"/roms/gb");
@@ -86,17 +89,17 @@ static void scan(){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 002 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 003 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
-  textAt(40,140,"GAME BOY",4);textAt(40,194,"DMG / PEANUT-GB",2);
+  textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
-  textAt(40,292,"NINTENDO NES",3);textAt(40,346,"FAMICOM / NOFRENDO",2);
+  textAt(40,292,"NINTENDO NES",3);textAt(40,346,"THWAITE + MAS",2);
   textAt(20,434,"DIO40 / 16MB / SD + FLASH",2,ACC);
 }
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA RETRO",3,ACC);
-  textAt(18,52,nesMode?"NES / BUILD 002":"GAME BOY / BUILD 002",2);button(360,12,106,38,"HOME");
+  textAt(18,52,nesMode?"NES / BUILD 003":"GAME BOY / BUILD 003",2);button(360,12,106,38,"HOME");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
@@ -104,7 +107,7 @@ static void menu(){
     String p=paths[page*6+i];p=p.startsWith("@")?p.substring(1)+" [FLASH]":p.substring(p.lastIndexOf('/')+1);
     textAt(24,y+12,p.substring(0,34),2);
   }
-  button(14,420,110,45,"PREV");button(145,420,170,45,"RESCAN");button(345,420,121,45,"NEXT");
+  button(14,420,110,45,"PREV");button(145,420,170,45,"+ SD ROMS");button(345,420,121,45,"NEXT");
 }
 static void gameUI(){
   lcd.fillScreen(BG);
@@ -138,6 +141,7 @@ static bool load(const String &p){
   if(ram)memset(ram,0xFF,128*1024);memset(frame,0,320*288*sizeof(uint16_t));
   int err=nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
+  Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
   playing=true;gameUI();return true;
 }
 void setup(){
@@ -152,7 +156,7 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  homeUI();
+  nesMode=false;scan();menu();
 }
 void loop(){
   if(!addr){delay(100);return;}
@@ -164,7 +168,7 @@ void loop(){
         if(hit(p,20,110,440,135)||hit(p,20,262,440,135)){nesMode=p.y>=262;scan();menu();}
       }else if(hit(p,360,12,106,38)){homeUI();}
       else if(hit(p,14,420,110,45)){if(page)page--;menu();}
-      else if(hit(p,145,420,170,45)){scan();menu();}
+      else if(hit(p,145,420,170,45)){scan(true);menu();}
       else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}
       else if(p.y>=116&&p.y<404){
         size_t i=page*6+(p.y-116)/48;

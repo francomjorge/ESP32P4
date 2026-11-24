@@ -4,6 +4,8 @@ from urllib.request import urlopen, Request
 import hashlib,json
 ROOT=Path(__file__).resolve().parents[1]
 GAMES=[
+("Tobu Tobu Girl DX","gb","SimonLarsen/tobutobugirl-dx","4985d4d282aa43229f250ffa3b0d86998ebd55d3","https://raw.githubusercontent.com/mxmgorin/oxgbc/b95ff230bcfbf9ec21186cbac4b954d377a7507d/crates/web/assets/tobudx.gb","LICENSE"),
+("Thwaite","nes","pinobatch/thwaite-nes","v0.04","https://github.com/pinobatch/thwaite-nes/releases/download/v0.04/thwaite.nes","LICENSE.txt"),
 ("Big2Small","gb","mdsteele/big2small","v1.0.0","https://github.com/mdsteele/big2small/releases/download/v1.0.0/big2small.gb","LICENSE"),
 ("2048","gb","wyattferguson/2048-gb","167788105db659f2049dd2d537ee12f63d87b1e7","2048.gb","LICENSE"),
 ("Breakout","gb","flozz/gameboy-examples","e3796043a4f392a934a00f26f4ed20ce06ad5323","10-breakout/breakout.gb","LICENSE"),
@@ -31,6 +33,9 @@ for i,(name,system,repo,ref,path,license_name) in enumerate(GAMES):
     dest=out/"roms"/system;dest.mkdir(parents=True,exist_ok=True)
     (dest/(name.replace(" ","_")+"."+system)).write_bytes(data)
     (lic/(repo.replace("/","_")+".txt")).write_bytes(get(base+license_name))
+    if name=="Tobu Tobu Girl DX":
+        (lic/"Tobu-credits.txt").write_bytes(get(base+"README.md"))
+        (lic/"CC-BY-4.0.txt").write_bytes(get("https://creativecommons.org/licenses/by/4.0/legalcode.txt"))
     header.append(f"static const uint8_t builtin_{i}[]={{")
     for pos in range(0,len(data),32):header.append(",".join(f"0x{b:02x}" for b in data[pos:pos+32])+",")
     header.append("};")
