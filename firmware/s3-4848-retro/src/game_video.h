@@ -15,7 +15,8 @@ static uint8_t input(int x,int y,bool sega,bool& exit){
 }
 // Only the display owner calls these routines. Never write into guest framebuffers.
 static uint16_t strip[480*8];
-static uint16_t xmap[480];
+static uint16_t xmap[480],ymap[480],scaledRow[480];
+static int mapSW=0,mapSH=0,mapW=0,mapH=0;
 static uint8_t oldLayout=255;
 static int oldW=0,oldH=0;
 static bool oldOverlay=false;
@@ -51,15 +52,22 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
   else lcd.drawIndexedBitmap(x,y,const_cast<uint8_t*>(idx),const_cast<uint16_t*>(pal),sw,sh,pitch-sw);
   return;
  }
- for(int j=0;j<w;j++)xmap[j]=(uint32_t)j*sw/w;
+ if(mapSW!=sw||mapSH!=sh||mapW!=w||mapH!=h){
+  for(int j=0;j<w;j++)xmap[j]=(uint32_t)j*sw/w;
+  for(int j=0;j<h;j++)ymap[j]=(uint32_t)j*sh/h;
+  mapSW=sw;mapSH=sh;mapW=w;mapH=h;
+ }
+ int prev=-1;
  for(int top=0;top<h;top+=8){
-  int rows=min(8,h-top);int prev=-1;
+  int rows=min(8,h-top);
   for(int row=0;row<rows;row++){
-   int sy=(uint32_t)(top+row)*sh/h;uint16_t* dst=strip+row*w;
-   if(row&&sy==prev)memcpy(dst,dst-w,w*2);
-   else if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)dst[j]=src[xmap[j]];}
-   else {const uint8_t* src=idx+sy*pitch;for(int j=0;j<w;j++)dst[j]=pal[src[xmap[j]]];}
-   prev=sy;
+   int sy=ymap[top+row];uint16_t* dst=strip+row*w;
+   if(sy!=prev){
+    if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
+    else {const uint8_t* src=idx+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=pal[src[xmap[j]]];}
+    prev=sy;
+   }
+   memcpy(dst,scaledRow,w*2);
   }
   if(o.overlay){for(const auto& k:keys)if(!o.sega||k.bit!=4)tint(k,x,y+top,w,rows);if(o.sega)tint(segaC,x,y+top,w,rows);}
   lcd.draw16bitRGBBitmap(x,y+top,strip,w,rows);

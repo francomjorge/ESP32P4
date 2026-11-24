@@ -26,13 +26,14 @@ static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,mdMode=false,home=true;
+static bool splashVisible=true,splashPressed=false;
 static bool detail=false,overlay=false,overlayArmed=false,launchRelease=false;
 static uint32_t overlayMs=0;
 static uint8_t layoutMode=GameVideo::FULL;
 static const char* layoutNames[]={"FULL","FIT","NATIVE"};
 static size_t selected=0;
 // COMP: all scanlines + chip timers, synchronous. PCM: timers with skipped rendering.
-static unsigned mdVideoMode=0;
+static unsigned mdVideoMode=1; // PCM: keep sound chip timing, skip unused rendering
 static const char *mdModes[]={"COMP","PCM","20A","20S"};
 static uint32_t phase=0,heartbeat=0;
 static uint32_t maxWork=0;
@@ -211,7 +212,7 @@ static bool load(const String &p){
   perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 020 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 021 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -228,11 +229,10 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  Serial.println("BOOT 020 private ROM init");private_rom_init();
-  Serial.printf("BOOT 020 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 020 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 020 splash ok");delay(700);
-  Serial.println("BOOT 020 home begin");homeUI();Serial.println("BOOT 020 home ok");
+  Serial.println("BOOT 021 private ROM init");private_rom_init();
+  Serial.printf("BOOT 021 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 021 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 021 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -240,6 +240,11 @@ void loop(){
   if(!addr){delay(100);return;}
   if(playing)markPhase(1);
   pollTouch();
+  if(splashVisible){
+    if(npoints)splashPressed=true;
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 021 home begin");homeUI();Serial.println("BOOT 021 home ok");}
+    delay(12);return;
+  }
   if(!playing){
     if(npoints){if(!wasDown)gestureStart=points[0];gestureEnd=points[0];}
     if(!npoints&&wasDown){

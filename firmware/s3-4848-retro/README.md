@@ -91,3 +91,6 @@ Based on 018 unchanged emulator cores. Three themed home cards with flash counts
 
 ## Build 020 — RGB pixel write fix
 019 physical boot reports Core 1 StoreProhibited after GT911 detection. Pinned Arduino_GFX v1.6.4 Arduino_RGB_Display::writePixelPreclipped uses uninitialized y2 for rotation 0. Newly added diagonal splash and circle/line graphics trigger this path. Patch exact library source after dependency install, failing CI if not matched. Add boot stage markers and archive ELF/map for symbolication. Keep 019 UI/compositor, cores, timing and board configuration. Root cause consistent with panic but physical validation pending. Fix NES title size to fit card.
+
+## Build 021 — touch splash / performance A/B
+020 physical report: boots, UI and games work but slow in COMP (24.6–25.2 emu FPS, 8–8.3 displayed, 32 ms core, 22 ms LCD). Preserve 020. Splash now remains until first touch is released; consumes gesture before Home. Default MD PCM (timers active, skipped video, async LCD), COMP retained for compatibility, 20A/20S muted comparison retained. This default is experimental and must be checked for guest freezes. Cache x/y scale mappings and reuse a clean scaled row across strip boundaries; no guest buffer mutation or panel/pin/timing changes. FULL retained. No FPS claim pending hardware. If PCM freezes, return to COMP. Audio output not connected.
