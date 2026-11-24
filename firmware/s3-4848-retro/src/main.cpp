@@ -25,7 +25,22 @@ static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,mdMode=false,home=true;
-static bool mdAudioTest=false;
+// 20A and 20S isolate LCD worker; 15A reduces load, 30A tests headroom.
+static unsigned mdVideoMode=0;
+static const char *mdModes[]={"20A","20S","15A","30A"};
+static uint32_t phase=0,heartbeat=0;
+static uint32_t maxWork=0;
+static void markPhase(uint32_t p){__atomic_store_n(&phase,p,__ATOMIC_RELAXED);}
+static void stallMonitor(void*){
+  uint32_t prev=0;
+  for(;;){
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    uint32_t now=__atomic_load_n(&heartbeat,__ATOMIC_RELAXED);
+    uint32_t p=__atomic_load_n(&phase,__ATOMIC_RELAXED);
+    if(p&&now==prev)Serial.printf("STALL phase=%u frame=%u lcdBusy=%u\n",p,now,!AsyncVideo::ready());
+    prev=now;
+  }
+}
 static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
@@ -106,7 +121,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 016 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 017 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -116,9 +131,9 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 016":nesMode?"NES / BUILD 016":"GAME BOY / BUILD 016",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 017":nesMode?"NES / BUILD 017":"GAME BOY / BUILD 017",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
-  if(mdMode){textAt(18,81,status.substring(0,22),2,ACC);button(308,72,158,38,mdAudioTest?"PCM ON":"PCM OFF");}
+  if(mdMode){textAt(18,81,status.substring(0,22),2,ACC);button(308,72,158,38,mdModes[mdVideoMode]);}
   else textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
@@ -136,7 +151,7 @@ static void gameUI(){
   button(190,426,102,42,mdMode?"C":"SELECT");button(300,426,100,42,"START");
   button(335,355,62,60,"B");button(407,320,64,60,"A");
 }
-static void releaseGame(){AsyncVideo::drain();if(mdMode)md_stop();else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
+static void releaseGame(){markPhase(0);AsyncVideo::drain();if(mdMode)md_stop();else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
   File f;
   const BuiltinROM *internal=nullptr;
@@ -163,14 +178,14 @@ static bool load(const String &p){
   else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||(!nesMode&&!mdMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
   if(ram)memset(ram,0xFF,128*1024);if(frame)memset(frame,0,320*288*sizeof(uint16_t));
-  if(mdMode){md_set_z80(true);md_set_audio_test(mdAudioTest);}
+  if(mdMode){md_set_z80(true);md_set_audio_test(false);}
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
-  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?(mdVideoMode==2?4:mdVideoMode==3?2:3):2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 017 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -181,7 +196,8 @@ void setup(){
   if(!lcd.begin()){Serial.println("LCD init failed");return;}
   lcd.fillScreen(BG);digitalWrite(38,HIGH);
   Serial.printf("LCD worker core0=%s\n",AsyncVideo::begin(lcd,BG)?"ready":"fallback sync");
-  Wire1.begin(19,45,400000);
+  xTaskCreatePinnedToCore(stallMonitor,"retroMon",3072,nullptr,1,nullptr,0);
+  Wire1.begin(19,45,400000);Wire1.setTimeOut(10);
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
@@ -192,6 +208,7 @@ void setup(){
 void loop(){
   const uint32_t tickStart=micros();
   if(!addr){delay(100);return;}
+  if(playing)markPhase(1);
   pollTouch();
   if(!playing){
     if(npoints&&!wasDown){
@@ -202,7 +219,7 @@ void loop(){
       }else if(hit(p,206,0,76,50)){mdMode=false;nesMode=false;scan();menu();}
       else if(hit(p,292,0,82,50)){mdMode=false;nesMode=true;scan();menu();}
       else if(hit(p,384,0,96,50)){mdMode=true;nesMode=false;scan();menu();}
-      else if(mdMode&&hit(p,308,72,158,38)){mdAudioTest=!mdAudioTest;Serial.printf("MD next launch PCM synthesis=%s (no GPIO output)\n",mdAudioTest?"ON":"OFF");menu();}
+      else if(mdMode&&hit(p,308,72,158,38)){mdVideoMode=(mdVideoMode+1)%4;Serial.printf("MD next launch video=%s\n",mdModes[mdVideoMode]);menu();}
       else if(hit(p,14,420,110,45)){if(page)page--;menu();}
       else if(hit(p,145,420,170,45)){scan(true);menu();}
       else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}
@@ -229,12 +246,14 @@ void loop(){
   const uint32_t period=mdMode?md_period():nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
   const bool due=mdSeq++%mdDiv==0;
-  const bool async=(mdMode||nesMode)&&AsyncVideo::enabled();
+  const bool async=(nesMode||(mdMode&&mdVideoMode!=1))&&AsyncVideo::enabled();
   const bool present=due&&(!async||AsyncVideo::ready());
   if(due&&!present)droppedFrames++;
+  markPhase(2);
   uint32_t coreStart=micros();
   if(mdMode)md_frame(keys,present);else if(nesMode)nes_core_frame(keys,present);else core_frame(keys,present);
   mdCoreUs+=micros()-coreStart;
+  markPhase(3);
   if(present){
     uint32_t t=micros();
     if(mdMode||nesMode){
@@ -256,6 +275,9 @@ void loop(){
   }
   lastPresented=present;
   lastWork=micros()-tickStart;
+  if(lastWork>maxWork)maxWork=lastWork;
+  __atomic_fetch_add(&heartbeat,1,__ATOMIC_RELAXED);
+  markPhase(4);
   if(mdMode){if(present){mdRenderUs+=lastWork;mdRenderN++;}else{mdPlainUs+=lastWork;mdPlainN++;}}
   perfFrames++;perfWork+=lastWork;
   if(lastWork>=period)perfOver++;
@@ -280,17 +302,11 @@ void loop(){
         }
         Serial.printf("MD BUDGET plain=%u us render=%u us predicted30=%u us predicted20=%u us chosen=%u current=%u\n",
           (unsigned)plain,(unsigned)rendered,(unsigned)(plain+extra/2),(unsigned)(plain+extra/3),best,mdDiv);
-        if(fps<target-2 || droppedFrames>2){
-          if(mdDiv<4)mdDiv++;
-          mdCandidate=mdCandidateWindows=0;
-        }else if(best>mdDiv){
-          mdDiv=best;mdCandidate=mdCandidateWindows=0;
-        }else if(best<mdDiv && fps>=target-0.7f && droppedFrames==0){
-          if(mdCandidate!=best){mdCandidate=best;mdCandidateWindows=0;}
-          if(++mdCandidateWindows>=3){mdDiv--;mdCandidate=mdCandidateWindows=0;}
-        }else{mdCandidate=mdCandidateWindows=0;}
+        // Fixed cadence for A/B testing. Do not change divisor automatically.
+        Serial.printf("MD STABILITY mode=%s maxWork=%u us\n",mdModes[mdVideoMode],maxWork);
+        maxWork=0;
         mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;
-      }else{
+      }else if(!mdMode){
         if(fps<target-2){goodWindows=0;if(mdDiv<4)mdDiv++;}
         else if(fps>=target-0.5f && droppedFrames==0){if(++goodWindows>=5){if(mdDiv>2)mdDiv--;goodWindows=0;}}
         else goodWindows=0;

@@ -79,3 +79,6 @@ Audio is a mandatory acceptance requirement for MD/NES/GB. Sega Z80 always ON in
 
 ## Build 016 — video-first CPU performance
 User prioritizes video stability and FPS; physical audio postponed. Default PCM OFF, Z80 ON. Existing PCM synthesis test remains available, no physical audio GPIO used. Try O3 for M68K and Z80 interpreter translation units in addition to existing VDP O3, without modifying instruction semantics or clock ratios. Preserve 015 and earlier baselines. Existing per-CPU timing, MD BUDGET, zero-copy and conservative frameskip retained. No hardware FPS improvement asserted until comparison.
+
+## Build 017 — fixed cadence stability A/B
+User reports stutter/freezing despite 016. Do not infer a cause from average FPS. MD menu mode cycles 20A (default fixed divisor 3 async), 20S (same cadence synchronous), 15A (async divisor 4), 30A (experimental async divisor 2). No automatic MD cadence changes. Z80 ON, PCM OFF. I2C transaction timeout 10 ms. Core0 monitor reports STALL if frame progress stops, phase 1 touch, 2 core, 3 submit/draw, 4 pacing/log. Max work measured each window. NES/GB core unchanged. 016 preserved. No claim of physical resolution.
