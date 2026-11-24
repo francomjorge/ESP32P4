@@ -30,6 +30,7 @@ static void geometry(int sw,int sh,uint8_t layout,int& x,int& y,int& w,int& h){
 static void tint(const Key& k,int dx,int dy,int dw,int rows){
  const int x0=max(dx,k.x),x1=min(dx+dw,k.x+k.w);
  const int y0=max(dy,k.y),y1=min(dy+rows,k.y+k.h);
+ if(x0>=x1||y0>=y1)return;
  for(int y=y0;y<y1;y++){uint16_t* p=strip+(y-dy)*dw+x0-dx;
   for(int x=x0;x<x1;x++,p++)*p=(*p&0xf7deu)>>1;
  }
