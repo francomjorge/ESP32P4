@@ -29,7 +29,7 @@ static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
 static unsigned mdDiv=2,mdSeq=0,goodWindows=0;
-static uint32_t queuedFrames=0,droppedFrames=0;
+static uint32_t queuedFrames=0,droppedFrames=0,borrowedFrames=0;
 static uint32_t frameDeadline=0;
 static int shownW=0,shownH=0;
 static uint32_t mdDrawUs=0,mdCoreUs=0;
@@ -103,7 +103,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 011 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 012 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -113,7 +113,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 011":nesMode?"NES / BUILD 011":"GAME BOY / BUILD 011",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 012":nesMode?"NES / BUILD 012":"GAME BOY / BUILD 012",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
@@ -162,7 +162,7 @@ static bool load(const String &p){
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
-  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;queuedFrames=droppedFrames=0;mdDrawUs=mdCoreUs=0;
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
   playing=true;gameUI();frameDeadline=micros();shownW=shownH=0;return true;
 }
@@ -234,7 +234,13 @@ void loop(){
       int w,h,pitch;uint16_t *pal;
       uint8_t *v=mdMode?md_video(&w,&h,&pitch,&pal):nes_core_video(&w,&h,&pitch,&pal);
       if(v&&pal){
-        if(async){if(AsyncVideo::submit(v,pal,w,h,pitch))queuedFrames++;else droppedFrames++;}
+        if(async){
+          if(mdMode&&md_video_can_flip()){
+            if(AsyncVideo::submitBorrowed(v,pal,w,h,pitch)){
+              md_video_flip();queuedFrames++;borrowedFrames++;
+            }else droppedFrames++;
+          }else if(AsyncVideo::submit(v,pal,w,h,pitch))queuedFrames++;else droppedFrames++;
+        }
         else {if(w!=shownW||h!=shownH){lcd.fillRect(80,10,320,288,BG);shownW=w;shownH=h;}
           lcd.drawIndexedBitmap((480-w)/2,10+(288-h)/2,v,pal,w,h,pitch-w);}
       }
@@ -256,11 +262,11 @@ void loop(){
     {
       float fps=perfFrames*1000.0f/elapsedMs,target=1000000.0f/period;
       Serial.printf("VIDEO PERF core=%u us lcd=%u us frameskip=%u target=%.1f\n",(unsigned)(mdCoreUs/perfFrames),(unsigned)(perfShown?mdDrawUs/perfShown:0),mdDiv-1,target);
-      if(async)Serial.printf("ASYNC LCD=%u us submit=%u us queued=%u dropped=%u\n",(unsigned)(workerCount?workerUs/workerCount:0),(unsigned)(queuedFrames?mdDrawUs/queuedFrames:0),queuedFrames,droppedFrames);
+      if(async)Serial.printf("ASYNC LCD=%u us submit=%u us queued=%u dropped=%u borrowed=%u\n",(unsigned)(workerCount?workerUs/workerCount:0),(unsigned)(queuedFrames?mdDrawUs/queuedFrames:0),queuedFrames,droppedFrames,borrowedFrames);
       if(fps<target-2){goodWindows=0;if(mdDiv<4)mdDiv++;}
       else if(fps>=target-0.5f && droppedFrames==0){if(++goodWindows>=5){if(mdDiv>2)mdDiv--;goodWindows=0;}}
       else goodWindows=0;
-      queuedFrames=droppedFrames=0;
+      queuedFrames=droppedFrames=borrowedFrames=0;
       mdCoreUs=mdDrawUs=0;
     }
     perfStart=millis();perfFrames=perfShown=perfWork=perfOver=0;

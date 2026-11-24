@@ -18,7 +18,8 @@ extern int screen_width,screen_height,hint_pending;
 int system_clock,scan_line;
 int16_t gwenesis_sn76489_buffer[1100],gwenesis_ym2612_buffer[1100];
 int sn76489_index,sn76489_clock,ym2612_index,ym2612_clock;
-static uint8_t *video;
+static uint8_t *video,*spareVideo;
+#define MD_VIDEO_BYTES (320*241+320)
 static int videoWidth=320,videoHeight=224;
 static bool active;
 static unsigned period=16667;
@@ -36,6 +37,10 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   video=heap_caps_calloc(1,320*241+320,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
   if(!video)video=heap_caps_calloc(1,320*241+320,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
   if(!VRAM||!video){md_stop();return -21;}
+  // Second framebuffer stays independent until LCD worker completes.
+  // Do not exhaust internal heap just to allocate the second framebuffer.
+  spareVideo=heap_caps_calloc(1,MD_VIDEO_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+  printf("MD doublebuffer=%s\n",spareVideo?"ready":"copy fallback");
   load_cartridge(rom,bytes);
   power_on();reset_emulation();
   (void)frame;active=true;period=16667;
@@ -95,5 +100,7 @@ uint8_t *md_video(int *w,int *h,int *pitch,uint16_t **palette){
   *w=videoWidth;*h=videoHeight;*pitch=320;*palette=CRAM565;
   return active?video+160:NULL;
 }
+bool md_video_can_flip(void){return active&&video&&spareVideo;}
+void md_video_flip(void){if(md_video_can_flip()){uint8_t *old=video;video=spareVideo;spareVideo=old;}}
 unsigned md_period(void){return period;}
-void md_stop(void){active=false;free(VRAM);free(video);VRAM=video=NULL;ROM_DATA=NULL;}
+void md_stop(void){active=false;free(VRAM);free(video);free(spareVideo);VRAM=video=spareVideo=NULL;ROM_DATA=NULL;}

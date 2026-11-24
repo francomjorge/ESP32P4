@@ -64,3 +64,6 @@ Golden Axe on 009 measured 42–44 emu fps / 10–11 displayed fps, CPU ~9 ms, V
 
 ## Build 011 — asynchronous native presentation
 Retains 010 and stable 005. LCD indexed presentation on core 0 using a single immutable snapshot with copied palette, nonblocking submission, menu drain, synchronous fallback on resource failure. MD starts divisor 3; promotion requires five healthy 3s windows; demotion quick. NES also uses async LCD; GB rendering unchanged. No timing or panel pin changes. Physical performance not verified.
+
+## Build 012 — zero-copy Mega Drive presentation
+Golden Axe 011 measured 55.5–58.2 emulation fps, 14–15 displayed fps, LCD worker 10.5–10.9 ms, submit copy 3.7–3.8 ms, no queue drops. MD owns two separately allocated indexed framebuffers (spare PSRAM). Submit borrows the rendered buffer and copies only palette, swaps render target, and drains worker before freeing. If spare allocation fails, use 011 copy path. NES and GB unchanged. Preserve 011 on experimental-s3-011. No performance claim until physical testing.

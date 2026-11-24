@@ -12,6 +12,8 @@ static SemaphoreHandle_t idle=nullptr;
 static TaskHandle_t task=nullptr;
 static Arduino_RGB_Display *display=nullptr;
 static uint8_t *snapshot=nullptr;
+static uint8_t *jobPixels=nullptr;
+static int jobPitch=0;
 static uint16_t palette[256];
 static int width,height,oldW=0,oldH=0;
 static uint32_t drawUs=0,drawCount=0;
@@ -23,7 +25,7 @@ static void worker(void *){
     if(width!=oldW||height!=oldH){
       display->fillRect(80,10,320,288,bg);oldW=width;oldH=height;
     }
-    display->drawIndexedBitmap((480-width)/2,10+(288-height)/2,snapshot,palette,width,height,0);
+    display->drawIndexedBitmap((480-width)/2,10+(288-height)/2,jobPixels,palette,width,height,jobPitch-width);
     __atomic_fetch_add(&drawUs,micros()-start,__ATOMIC_RELAXED);
     __atomic_fetch_add(&drawCount,1,__ATOMIC_RELAXED);
     xSemaphoreGive(idle);
@@ -48,6 +50,16 @@ static bool submit(const uint8_t* src,const uint16_t* pal,int w,int h,int pitch)
   if(xSemaphoreTake(idle,0)!=pdTRUE)return false;
   width=w;height=h;
   for(int y=0;y<h;y++)memcpy(snapshot+y*w,src+y*pitch,w);
+  jobPixels=snapshot;jobPitch=w;
+  memcpy(palette,pal,sizeof(palette));
+  xTaskNotifyGive(task);
+  return true;
+}
+// Caller guarantees that borrowed data is not overwritten until ready()/drain().
+static bool submitBorrowed(uint8_t* src,const uint16_t* pal,int w,int h,int pitch){
+  if(!src||!pal||w<1||w>320||h<1||h>240||pitch<w||!idle)return false;
+  if(xSemaphoreTake(idle,0)!=pdTRUE)return false;
+  width=w;height=h;jobPixels=src;jobPitch=pitch;
   memcpy(palette,pal,sizeof(palette));
   xTaskNotifyGive(task);
   return true;
