@@ -8,6 +8,8 @@
 #include "gb_core.h"
 #include "builtin_roms.h"
 #include "nes_core.h"
+#include <esp_partition.h>
+#include "private_roms.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -69,6 +71,7 @@ static bool hit(Point p,int x,int y,int w,int h){
 static void scan(bool includeSD=false){
   paths.clear();page=0;
   for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
+  if(nesMode)for(unsigned i=0;i<private_rom_count();i++)paths.push_back(String("#")+private_rom_name(i));
   size_t builtinCount=paths.size();
   Serial.printf("ROM library %s: %u internal games\n",nesMode?"NES":"GB",(unsigned)builtinCount);
   for(const auto &g:builtins)if(g.nes==nesMode)Serial.printf("  %s: %u bytes\n",g.name,(unsigned)g.size);
@@ -89,22 +92,22 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 003 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 004 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
-  textAt(40,292,"NINTENDO NES",3);textAt(40,346,"THWAITE + MAS",2);
+  textAt(40,292,"NINTENDO NES",3);textAt(40,346,"MULTICART / NES",2);
   textAt(20,434,"DIO40 / 16MB / SD + FLASH",2,ACC);
 }
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA RETRO",3,ACC);
-  textAt(18,52,nesMode?"NES / BUILD 003":"GAME BOY / BUILD 003",2);button(360,12,106,38,"HOME");
+  textAt(18,52,nesMode?"NES / BUILD 004":"GAME BOY / BUILD 004",2);button(360,12,106,38,"HOME");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
     lcd.fillRoundRect(14,y,452,42,5,CARD);
-    String p=paths[page*6+i];p=p.startsWith("@")?p.substring(1)+" [FLASH]":p.substring(p.lastIndexOf('/')+1);
+    String p=paths[page*6+i];p=(p.startsWith("@")||p.startsWith("#"))?p.substring(1)+" [FLASH]":p.substring(p.lastIndexOf('/')+1);
     textAt(24,y+12,p.substring(0,34),2);
   }
   button(14,420,110,45,"PREV");button(145,420,170,45,"+ SD ROMS");button(345,420,121,45,"NEXT");
@@ -122,7 +125,10 @@ static bool load(const String &p){
   File f;
   const BuiltinROM *internal=nullptr;
   size_t bytes=0;
-  if(p.startsWith("@")){
+  int privateIndex=-1;
+  if(p.startsWith("#"))privateIndex=private_rom_find(p.substring(1).c_str());
+  if(privateIndex>=0){bytes=private_rom_size(privateIndex);}
+  else if(p.startsWith("@")){
     for(const auto &g:builtins)if(p.substring(1)==g.name){internal=&g;break;}
     if(!internal){status="ROM interna no encontrada";return false;}
     bytes=internal->size;
@@ -135,7 +141,8 @@ static bool load(const String &p){
   frame=(uint16_t*)ps_malloc(320*288*sizeof(uint16_t));
   if(!rom||(!nesMode&&!ram)||!frame){releaseGame();status="Sin PSRAM suficiente";return false;}
   size_t got=bytes;
-  if(internal)memcpy(rom,internal->data,bytes);
+  if(privateIndex>=0){if(!private_rom_read(privateIndex,rom,bytes))got=0;}
+  else if(internal)memcpy(rom,internal->data,bytes);
   else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||(!nesMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
   if(ram)memset(ram,0xFF,128*1024);memset(frame,0,320*288*sizeof(uint16_t));
@@ -156,7 +163,7 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  nesMode=false;scan();menu();
+  private_rom_init();nesMode=private_rom_count()>0;scan();menu();
 }
 void loop(){
   if(!addr){delay(100);return;}

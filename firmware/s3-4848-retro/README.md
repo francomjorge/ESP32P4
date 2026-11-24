@@ -40,3 +40,6 @@ LCD command SPI CS39/SCK48/MOSI47. SD shares SCK48/MOSI47, MISO41/CS42; inactive
 
 ## Full ESP-BOX-EMU port
 Upstream is tied to ESP32-S3-BOX's display, audio and custom gamepad, including board-dependent initialization and updater. Adapt its box-emu component and updater to a separate RGB/GT911 board HAL; validate memory budget, UI geometry, SD bus and gamepad mapping. Then bring up NES, GBC, SMS, Genesis, MSX and Doom individually. No claims of compatibility until tested. DOS is a separate x86 emulation project, not a feature of this build.
+
+## Build 004
+Adds experimental iNES mappers 225 and 227, including 225 nibble RAM and 227 CHR write-protect; solder-pad menu selection is not emulated. Optional private ROM pack uses existing storage partition at 0x610000, no user ROMs in repository. Raw factory image DIO40. Physical validation pending. Storage partition must not be formatted or used for a filesystem when a private pack is installed.

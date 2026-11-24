@@ -11,4 +11,5 @@ mkdir -p lib/nofrendo/src dist/sources
 cp -R "$tmp/retro-core/components/nofrendo/nes" "$tmp/retro-core/components/nofrendo/mappers" lib/nofrendo/src/
 cp "$tmp/retro-core/components/nofrendo/"{config.h,database.h,nofrendo.h,nofrendo.c,palettes.h} lib/nofrendo/src/
 cp "$tmp/retro-core/components/nofrendo/COPYING" lib/nofrendo/
+python tools/patch_multicart.py
 tar -czf dist/sources/nofrendo-source.tar.gz -C lib nofrendo
