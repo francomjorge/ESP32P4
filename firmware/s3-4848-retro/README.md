@@ -67,3 +67,6 @@ Retains 010 and stable 005. LCD indexed presentation on core 0 using a single im
 
 ## Build 012 — zero-copy Mega Drive presentation
 Golden Axe 011 measured 55.5–58.2 emulation fps, 14–15 displayed fps, LCD worker 10.5–10.9 ms, submit copy 3.7–3.8 ms, no queue drops. MD owns two separately allocated indexed framebuffers (spare PSRAM). Submit borrows the rendered buffer and copies only palette, swaps render target, and drains worker before freeing. If spare allocation fails, use 011 copy path. NES and GB unchanged. Preserve 011 on experimental-s3-011. No performance claim until physical testing.
+
+## Build 013 — measured frame budget
+012 hardware log confirms 33–34 us zero-copy submission, no dropped jobs, 59.6 emu fps / 20 displayed fps in Golden Axe first window. Keep 012 as experimental-s3-012. Sega-only controller measures rendered vs skipped frame cost, predicts budgets for divisor 2/3/4, promotes gradually when sustained headroom exists, demotes on slow windows. VDP graphics translation unit O3 A/B experiment, CPU/bus/Z80 remain O2. NES/GB pacing and panel setup unchanged. Target 60 emu FPS with 20–30 displayed, no physical claims until validation.

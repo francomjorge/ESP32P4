@@ -29,6 +29,8 @@ static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
 static unsigned mdDiv=2,mdSeq=0,goodWindows=0;
+static uint32_t mdPlainUs=0,mdPlainN=0,mdRenderUs=0,mdRenderN=0;
+static unsigned mdCandidate=0,mdCandidateWindows=0;
 static uint32_t queuedFrames=0,droppedFrames=0,borrowedFrames=0;
 static uint32_t frameDeadline=0;
 static int shownW=0,shownH=0;
@@ -103,7 +105,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 012 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 013 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -113,7 +115,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 012":nesMode?"NES / BUILD 012":"GAME BOY / BUILD 012",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 013":nesMode?"NES / BUILD 013":"GAME BOY / BUILD 013",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
@@ -162,7 +164,8 @@ static bool load(const String &p){
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
-  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
+  mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
   playing=true;gameUI();frameDeadline=micros();shownW=shownH=0;return true;
 }
@@ -249,6 +252,7 @@ void loop(){
   }
   lastPresented=present;
   lastWork=micros()-tickStart;
+  if(mdMode){if(present){mdRenderUs+=lastWork;mdRenderN++;}else{mdPlainUs+=lastWork;mdPlainN++;}}
   perfFrames++;perfWork+=lastWork;
   if(lastWork>=period)perfOver++;
   uint32_t elapsedMs=millis()-perfStart;
@@ -263,9 +267,30 @@ void loop(){
       float fps=perfFrames*1000.0f/elapsedMs,target=1000000.0f/period;
       Serial.printf("VIDEO PERF core=%u us lcd=%u us frameskip=%u target=%.1f\n",(unsigned)(mdCoreUs/perfFrames),(unsigned)(perfShown?mdDrawUs/perfShown:0),mdDiv-1,target);
       if(async)Serial.printf("ASYNC LCD=%u us submit=%u us queued=%u dropped=%u borrowed=%u\n",(unsigned)(workerCount?workerUs/workerCount:0),(unsigned)(queuedFrames?mdDrawUs/queuedFrames:0),queuedFrames,droppedFrames,borrowedFrames);
-      if(fps<target-2){goodWindows=0;if(mdDiv<4)mdDiv++;}
-      else if(fps>=target-0.5f && droppedFrames==0){if(++goodWindows>=5){if(mdDiv>2)mdDiv--;goodWindows=0;}}
-      else goodWindows=0;
+      if(mdMode && mdPlainN && mdRenderN){
+        const float plain=(float)mdPlainUs/mdPlainN, rendered=(float)mdRenderUs/mdRenderN;
+        const float extra=rendered>plain?rendered-plain:0;
+        unsigned best=4;
+        for(unsigned d=2;d<=4;d++){
+          if(plain+extra/d <= period-700){best=d;break;}
+        }
+        Serial.printf("MD BUDGET plain=%u us render=%u us predicted30=%u us predicted20=%u us chosen=%u current=%u\n",
+          (unsigned)plain,(unsigned)rendered,(unsigned)(plain+extra/2),(unsigned)(plain+extra/3),best,mdDiv);
+        if(fps<target-2 || droppedFrames>2){
+          if(mdDiv<4)mdDiv++;
+          mdCandidate=mdCandidateWindows=0;
+        }else if(best>mdDiv){
+          mdDiv=best;mdCandidate=mdCandidateWindows=0;
+        }else if(best<mdDiv && fps>=target-0.7f && droppedFrames==0){
+          if(mdCandidate!=best){mdCandidate=best;mdCandidateWindows=0;}
+          if(++mdCandidateWindows>=3){mdDiv--;mdCandidate=mdCandidateWindows=0;}
+        }else{mdCandidate=mdCandidateWindows=0;}
+        mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;
+      }else{
+        if(fps<target-2){goodWindows=0;if(mdDiv<4)mdDiv++;}
+        else if(fps>=target-0.5f && droppedFrames==0){if(++goodWindows>=5){if(mdDiv>2)mdDiv--;goodWindows=0;}}
+        else goodWindows=0;
+      }
       queuedFrames=droppedFrames=borrowedFrames=0;
       mdCoreUs=mdDrawUs=0;
     }
