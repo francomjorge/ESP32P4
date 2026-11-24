@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ref=4ced120669750ca7228fd0414211430c1d923166
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+git init -q "$tmp"
+git -C "$tmp" remote add origin https://github.com/ducalex/retro-go.git
+git -C "$tmp" fetch -q --depth=1 origin "$ref"
+git -C "$tmp" checkout -q FETCH_HEAD -- gwenesis/components/gwenesis
+mkdir -p lib/gwenesis/src dist/sources
+cp -R "$tmp/gwenesis/components/gwenesis/src/"* lib/gwenesis/src/
+cp "$tmp/gwenesis/components/gwenesis/"{LICENSE,README.md,gwenesis.h} lib/gwenesis/
+find lib/gwenesis -name '*.o' -delete
+# Use caller-owned padded ROM, not a redundant second copy.
+python - <<'PY'
+from pathlib import Path
+p=Path("lib/gwenesis/src/bus/gwenesis_bus.c")
+s=p.read_text().replace("#ifdef RETRO_GO","#if 1 /* PRISMA: caller owns padded ROM */")
+p.write_text(s)
+p=Path("lib/gwenesis/src/cpus/M68K/m68k.h")
+s=p.read_text().replace("ROM_DATA[((A) ^ 1)]","ROM_DATA[(((A)&0x3fffff) ^ 1)]").replace("ROM_DATA[(A)]","ROM_DATA[((A)&0x3fffff)]")
+p.write_text(s)
+PY
+tar -czf dist/sources/gwenesis-source.tar.gz -C lib gwenesis

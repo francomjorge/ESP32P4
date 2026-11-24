@@ -52,3 +52,6 @@ Confirmed stable 005 preserved in stable-s3-005. Default fullscreen 480x480 near
 
 ## Build 007 — regression recovery
 User reported 006 alpha corruption and game stalls. Restore confirmed 005 emulator buffers, cores, pacing and classic SAFE rendering. FULL uses 16-row internal SRAM staging via Arduino_GFX draw16bitRGBBitmap; no direct scanout pointer or alpha blend, outline controls on game. Default full presentation at 30 FPS max, dynamically down to 20/15 if emulation falls behind. SAFE toggle restores 005-sized output without restarting. Serial logs separate draw cost and FPS. DIO40 and ROM partition unchanged. No claim of physical fix before testing.
+
+## Build 008 — experimental Sega Mega Drive
+Uses confirmed 005 graphics path, no 006/007 fullscreen changes. Gwenesis from Retro-Go pinned revision 4ced120, source + upstream license included. Adds SEGA tab, raw .md/.gen/.bin ROMs with SEGA header (up to 4 MiB) under /roms/md, ABC/Start controls, Z80 active, audio muted, 30 FPS max presentation; PAL frame period based on core mode. No save states, SMD, 32X or Sega CD. User ROMs are not committed. No physical compatibility or FPS claims.
