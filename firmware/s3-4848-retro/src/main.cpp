@@ -104,9 +104,15 @@ static void button(int x,int y,int w,int h,const char *s){
 static bool hit(Point p,int x,int y,int w,int h){
   return p.x>=x&&p.x<x+w&&p.y>=y&&p.y<y+h;
 }
+// Fixed seven-title benchmark library; private ROM bytes remain outside public source.
+static bool leanPrivate(unsigned i){
+ const char* n=private_rom_name(i);
+ return !strcmp(n,"64-in-1")||!strcmp(n,"1200-in-1")||!strcmp(n,"Super Mario Bros.")||!strcmp(n,"Super Mario Bros. 3")||!strcmp(n,"Sonic the Hedgehog")||!strcmp(n,"Golden Axe");
+}
 static void scan(bool includeSD=false){
+ includeSD=false; // isolate benchmarks; SD expansion intentionally disabled in LITE
   paths.clear();page=0;
-  if(nesMode||mdMode)for(unsigned i=0;i<private_rom_count();i++)if(private_rom_md(i)==mdMode)paths.push_back(String("#")+private_rom_name(i));
+  if(nesMode||mdMode)for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i)&&private_rom_md(i)==mdMode)paths.push_back(String("#")+private_rom_name(i));
   for(const auto &g:builtins)if(!mdMode&&g.nes==nesMode)paths.push_back(String("@")+g.name);
   size_t builtinCount=paths.size();
   Serial.printf("ROM library %s: %u internal games\n",mdMode?"MD":nesMode?"NES":"GB",(unsigned)builtinCount);
@@ -137,7 +143,7 @@ static size_t romSize(const String& p){
 static void homeUI(){
  home=true;detail=false;unsigned counts[3]={0,0,0};
  for(const auto& g:builtins)counts[g.nes?1:0]++;
- for(unsigned i=0;i<private_rom_count();i++)counts[private_rom_md(i)?2:1]++;
+ for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[private_rom_md(i)?2:1]++;
  RetroUI::home(lcd,counts);
 }
 static void menu(){
@@ -156,7 +162,7 @@ static void menu(){
   RetroUI::text(lcd,437,y+27,">",2,t.ink);
  }
  RetroUI::button(lcd,14,424,92,48,"PREV",t);
- RetroUI::button(lcd,119,424,242,48,"+ SD ROMS",t);
+ RetroUI::button(lcd,119,424,242,48,"LITE / "+String(paths.size())+" ROMS",t);
  RetroUI::button(lcd,374,424,92,48,"NEXT",t);
 }
 static void detailUI(){
@@ -195,6 +201,7 @@ static bool load(const String &p){
     if(!f||f.size()<(mdMode?512:nesMode?16400:32768)||f.size()>4*1024*1024){status="ROM invalida (32KB-4MB)";return false;}
     bytes=f.size();
   }
+  Serial.printf("MEM BEFORE romBytes=%u romAlloc=%u heap=%u psram=%u\n",(unsigned)bytes,(unsigned)(mdMode?0x400004:bytes),(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
   rom=(uint8_t*)ps_malloc(mdMode?0x400004:bytes);ram=(nesMode||mdMode)?nullptr:(uint8_t*)ps_malloc(128*1024);
   frame=(nesMode||mdMode)?nullptr:(uint16_t*)ps_malloc(320*288*sizeof(uint16_t));
   if(!rom||(!nesMode&&!mdMode&&!ram)||(!nesMode&&!mdMode&&!frame)){releaseGame();status="Sin PSRAM suficiente";return false;}
@@ -209,10 +216,11 @@ static bool load(const String &p){
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
+  Serial.printf("MEM ACTIVE heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
   perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 021 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 022 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -229,10 +237,10 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  Serial.println("BOOT 021 private ROM init");private_rom_init();
-  Serial.printf("BOOT 021 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 021 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 021 splash ready / waiting touch");
+  Serial.println("BOOT 022 private ROM init");private_rom_init();
+  Serial.printf("BOOT 022 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 022 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 022 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -242,7 +250,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 021 home begin");homeUI();Serial.println("BOOT 021 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 022 home begin");homeUI();Serial.println("BOOT 022 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -262,7 +270,7 @@ void loop(){
       }else if(abs(dy)<36&&abs(dx)<36){
         if(hit(p,14,10,94,48))homeUI();
         else if(hit(p,14,424,92,48)){if(page)page--;menu();}
-        else if(hit(p,119,424,242,48)){scan(true);menu();}
+        else if(hit(p,119,424,242,48)){/* LITE fixed library */}
         else if(hit(p,374,424,92,48)){if((page+1)*4<paths.size())page++;menu();}
         else if(p.x>=14&&p.x<466&&p.y>=92&&p.y<404&&(p.y-92)%80<72){size_t i=page*4+(p.y-92)/80;if(i<paths.size()){selected=i;detailUI();}}
       }

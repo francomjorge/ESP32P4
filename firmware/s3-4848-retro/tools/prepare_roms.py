@@ -13,6 +13,9 @@ GAMES=[
 ("Platformer","nes","nesdoug/17_Platformer","c10167f3072e10b27e89ecc869c3475744ddfa51","BUILD/platformer.nes","License.txt"),
 ("NES Hello","nes","nesdoug/01_Hello","940b0aab0f306176f8d1c21854690c9a206d183d","BUILD/hello.nes","License.txt"),
 ]
+GAMES=[g for g in GAMES if g[0]=="Tobu Tobu Girl DX"]
+assert len(GAMES)==1
+
 def get(url):
     with urlopen(Request(url,headers={"User-Agent":"PrismaRetroCI"}),timeout=60) as r:return r.read()
 out=ROOT/"dist"/"sd-card"
