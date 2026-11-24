@@ -9,6 +9,8 @@
 #include "private_roms.h"
 #include "async_video.h"
 #include "retro_ui.h"
+#include "menu_canvas.h"
+#include "preview_art.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -17,6 +19,14 @@ static Arduino_ESP32RGBPanel rgb(18,17,16,21,
 static Arduino_RGB_Display lcd(480,480,&rgb,0,false,&panelBus,GFX_NOT_DEFINED,
   st7701_type9_init_operations,sizeof(st7701_type9_init_operations));
 
+static MenuCanvas menuCanvas;
+static Arduino_GFX& ui(){if(menuCanvas.ensure())return menuCanvas;return lcd;}
+static void showUI(){
+ uint32_t t=micros();
+ if(menuCanvas.getFramebuffer())lcd.draw16bitRGBBitmap(0,0,menuCanvas.getFramebuffer(),480,480);
+ lcd.flush(true);
+ Serial.printf("UI PRESENT canvas=%u us=%u\n",menuCanvas.getFramebuffer()!=nullptr,(unsigned)(micros()-t));
+}
 static const uint16_t BG=0x0842,FG=0xFFFF,ACC=0x5E9E,CARD=0x2124;
 static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint8_t *frame=nullptr;
@@ -104,7 +114,7 @@ static bool leanPrivate(unsigned i){
  return !private_rom_md(i)&&(!strcmp(n,"64-in-1")||!strcmp(n,"1200-in-1")||!strcmp(n,"Super Mario Bros.")||!strcmp(n,"Super Mario Bros. 3")||!strcmp(n,"Donkey Kong Classics")||!strcmp(n,"Tetris"));
 }
 static void scan(){
- paths.clear();page=0;
+ paths.clear();page=0;selected=0;
  if(nesMode)for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))paths.push_back(String("#")+private_rom_name(i));
  for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
  status=String(paths.size())+" juegos internos";
@@ -122,41 +132,42 @@ static void homeUI(){
  home=true;detail=false;unsigned counts[2]={0,0};
  for(const auto& g:builtins)counts[g.nes?1:0]++;
  for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[1]++;
- RetroUI::home(lcd,counts);lcd.flush(true);
+ RetroUI::home(ui(),counts);showUI();
 }
 static void menu(){
- home=false;detail=false;int sys=systemId();const auto&t=RetroUI::themes[sys];
- RetroUI::bg(lcd,sys);
- RetroUI::button(lcd,14,10,94,48,"HOME",t);
- RetroUI::text(lcd,122,15,t.name,3,t.ink);
- RetroUI::text(lcd,122,43,String(t.bits)+" / "+paths.size()+" JUEGOS",2,t.muted);
- RetroUI::text(lcd,16,72,status.substring(0,36),1,t.muted);
+ home=false;detail=false;int sys=systemId();const auto&t=RetroUI::themes[sys];auto& d=ui();
+ if(paths.empty())selected=0;else if(selected>=paths.size()||selected/4!=page)selected=page*4;
+ RetroUI::bg(d,sys);
+ RetroUI::button(d,12,10,90,44,"HOME",t);
+ RetroUI::text(d,114,12,t.name,3,t.ink);
+ RetroUI::text(d,114,39,String(paths.size())+" CARTUCHOS",1,t.muted);
  for(size_t i=0;i<4&&page*4+i<paths.size();i++){
-  int y=92+i*80;const String& p=paths[page*4+i];String n=displayName(p);
-  lcd.fillRoundRect(14,y,452,72,7,t.card);lcd.drawRoundRect(14,y,452,72,7,t.edge);
-  RetroUI::cart(lcd,27,y+8,54,56,sys,RetroUI::seed(n));
-  RetroUI::text(lcd,94,y+12,n.substring(0,29),2,t.ink);
-  RetroUI::text(lcd,94,y+40,String(t.bits)+" / "+origin(p),2,t.muted);
-  RetroUI::text(lcd,437,y+27,">",2,t.ink);
+  size_t idx=page*4+i;int y=76+i*76;bool on=idx==selected;
+  String n=displayName(paths[idx]);
+  uint16_t card=on?t.card:0x2124,ink=on?t.ink:0x9cf3,edge=on?t.edge:0x4a49;
+  d.fillRoundRect(12,y,192,66,8,card);d.drawRoundRect(12,y,192,66,8,edge);
+  if(on){d.drawRoundRect(13,y+1,190,64,8,edge);d.fillRect(18,y+9,4,48,edge);}
+  RetroUI::text(d,29,y+13,n.substring(0,14),2,ink);
+  if(n.length()>14)RetroUI::text(d,29,y+36,n.substring(14,28),2,ink);
  }
- RetroUI::button(lcd,14,424,92,48,"PREV",t);
- RetroUI::button(lcd,119,424,242,48,"LITE / "+String(paths.size())+" ROMS",t);
- RetroUI::button(lcd,374,424,92,48,"NEXT",t);lcd.flush(true);
-}
-static void detailUI(){
- if(selected>=paths.size()){menu();return;}
- detail=true;home=false;int sys=systemId();const auto&t=RetroUI::themes[sys];const String& p=paths[selected];String n=displayName(p);
- RetroUI::bg(lcd,sys);RetroUI::button(lcd,14,10,100,48,"BACK",t);
- RetroUI::text(lcd,128,20,t.name,3,t.ink);
- lcd.fillRoundRect(16,70,448,202,8,t.card);lcd.drawRoundRect(16,70,448,202,8,t.edge);
- RetroUI::cart(lcd,161,79,158,162,sys,RetroUI::seed(n));
- RetroUI::center(lcd,240,252,"CARTRIDGE / ORIGINAL ART",1,t.muted);
- RetroUI::text(lcd,20,286,n.substring(0,24),3,t.ink);
- if(n.length()>24)RetroUI::text(lcd,20,313,n.substring(24,54),2,t.ink);
- size_t bytes=romSize(p);
- RetroUI::text(lcd,20,340,String(t.bits)+" / "+origin(p)+(bytes?" / "+String((unsigned)(bytes/1024))+" KiB":""),2,t.muted);
- RetroUI::button(lcd,16,369,150,48,layoutNames[layoutMode],t);
- RetroUI::button(lcd,16,426,448,48,"JUGAR",t,true);lcd.flush(true);
+ d.fillRoundRect(216,76,252,296,8,t.card);d.drawRoundRect(216,76,252,296,8,t.edge);
+ if(!paths.empty()){
+  String n=displayName(paths[selected]);const uint16_t* art=nullptr;
+  for(const auto& e:PreviewArt::entries)if(n==e.name){art=e.pixels;break;}
+  d.fillRect(222,82,240,180,0x0842);
+  if(art)d.draw16bitRGBBitmap(222,82,const_cast<uint16_t*>(art),240,180);
+  else RetroUI::cart(d,305,98,74,144,sys,RetroUI::seed(n));
+  RetroUI::text(d,226,270,art?"IMAGEN DE REFERENCIA":"SIN PREVIEW",1,t.muted);
+  RetroUI::text(d,226,290,n.substring(0,19),2,t.ink);
+  if(n.length()>19)RetroUI::text(d,226,311,n.substring(19,38),2,t.ink);
+  RetroUI::text(d,226,342,String((unsigned)(romSize(paths[selected])/1024))+" KiB / "+t.bits,1,t.muted);
+ }
+ RetroUI::text(d,14,390,status.substring(0,45),1,t.muted);
+ RetroUI::button(d,12,420,68,48,"<",t);
+ RetroUI::button(d,86,420,68,48,">",t);
+ RetroUI::button(d,162,420,112,48,layoutNames[layoutMode],t);
+ RetroUI::button(d,282,420,186,48,"JUGAR",t,true);
+ showUI();
 }
 static void gameUI(){
  lcd.fillScreen(0);lcd.flush(true);GameVideo::reset();overlay=false;overlayArmed=false;launchRelease=true;overlayMs=0;
@@ -199,7 +210,7 @@ static bool load(const String &p){
  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=nextPresent=0;imageHash=imageChanges=imageSamples=0;diagKeys=0;
  queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);
  playing=true;gameUI();maxWork=0;markPhase(1);
- Serial.printf("RUN BUILD 029 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
+ Serial.printf("RUN BUILD 030 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
  frameDeadline=micros();return true;
 }
 void setup(){
@@ -216,10 +227,10 @@ void setup(){
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
-  Serial.println("BOOT 029 private ROM init");private_rom_init();
-  Serial.printf("BOOT 029 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 029 splash begin");RetroUI::splash(lcd);lcd.flush(true);
-  Serial.println("BOOT 029 splash ready / waiting touch");
+  Serial.println("BOOT 030 private ROM init");private_rom_init();
+  Serial.printf("BOOT 030 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 030 splash begin");RetroUI::splash(ui());showUI();
+  Serial.println("BOOT 030 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -229,7 +240,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 029 home begin");homeUI();Serial.println("BOOT 029 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 030 home begin");homeUI();Serial.println("BOOT 030 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -237,20 +248,20 @@ void loop(){
     if(!npoints&&wasDown){
       Point p=gestureStart;int dy=(int)gestureEnd.y-(int)p.y;int dx=(int)gestureEnd.x-(int)p.x;
       if(home){if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=90&&p.y<410){int s=(p.y-90)/164;if(s<2&&(p.y-90)%164<148){nesMode=s==1;scan();menu();}}}
-      else if(detail){
-        if(abs(dy)<36&&abs(dx)<36){
-          if(hit(p,14,10,100,48))menu();
-          else if(hit(p,16,369,150,48)){layoutMode=(layoutMode+1)%3;detailUI();}
-          else if(hit(p,16,426,448,48)){const auto&t=RetroUI::themes[systemId()];RetroUI::bg(lcd,systemId());RetroUI::center(lcd,240,210,"CARGANDO...",3,t.ink);lcd.flush(true);if(!load(paths[selected]))menu();}
-        }
-      }else if(abs(dy)>55&&abs(dy)>abs(dx)){
-        if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;menu();
+      else if(abs(dy)>55&&abs(dy)>abs(dx)){
+        size_t old=page;if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;
+        if(old!=page)menu();
       }else if(abs(dy)<36&&abs(dx)<36){
-        if(hit(p,14,10,94,48))homeUI();
-        else if(hit(p,14,424,92,48)){if(page)page--;menu();}
-        else if(hit(p,119,424,242,48)){/* LITE fixed library */}
-        else if(hit(p,374,424,92,48)){if((page+1)*4<paths.size())page++;menu();}
-        else if(p.x>=14&&p.x<466&&p.y>=92&&p.y<404&&(p.y-92)%80<72){size_t i=page*4+(p.y-92)/80;if(i<paths.size()){selected=i;detailUI();}}
+        if(hit(p,12,10,90,44))homeUI();
+        else if(hit(p,12,420,68,48)){if(page){page--;menu();}}
+        else if(hit(p,86,420,68,48)){if((page+1)*4<paths.size()){page++;menu();}}
+        else if(hit(p,162,420,112,48)){layoutMode=(layoutMode+1)%3;menu();}
+        else if(hit(p,282,420,186,48)&&selected<paths.size()){
+          auto& d=ui();const auto&t=RetroUI::themes[systemId()];RetroUI::bg(d,systemId());RetroUI::center(d,240,210,"CARGANDO...",3,t.ink);showUI();menuCanvas.release();
+          if(!load(paths[selected]))menu();
+        }else if(p.x>=12&&p.x<204&&p.y>=76&&p.y<380&&(p.y-76)%76<66){
+          size_t i=page*4+(p.y-76)/76;if(i<paths.size()&&i!=selected){selected=i;menu();}
+        }
       }
     }
     wasDown=npoints>0;delay(12);return;
