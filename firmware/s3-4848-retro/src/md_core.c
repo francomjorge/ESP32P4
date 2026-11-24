@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
+#pragma GCC optimize ("O2")
+static uint16_t rgbrow[320];
+static uint8_t indexrow[320];
+static unsigned profileFrames,profileDraws;
+static uint64_t profileCPU,profileVDP,profileScale;
 #include "gwenesis.h"
 extern unsigned char *VRAM;
 extern unsigned char *ROM_DATA;
@@ -29,11 +35,14 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   if(bytes<512 || bytes>0x400000 || (bytes&1) || memcmp(rom+0x100,"SEGA",4))return -20;
   VRAM=heap_caps_calloc(1,VRAM_MAX_SIZE,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
   if(!VRAM)VRAM=heap_caps_calloc(1,VRAM_MAX_SIZE,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-  video=heap_caps_calloc(1,320*241+320,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+  video=heap_caps_calloc(1,320*241+320,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+  if(!video)video=heap_caps_calloc(1,320*241+320,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
   if(!VRAM||!video){md_stop();return -21;}
   load_cartridge(rom,bytes);
   power_on();reset_emulation();
   out=frame;active=true;period=16667;
+  profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=0;
+  printf("MD buffers VRAM=%p video=%p free_internal=%u\n",VRAM,video,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   return 0;
 }
 void md_frame(uint8_t k,bool present){
@@ -54,10 +63,15 @@ void md_frame(uint8_t k,bool present){
   ym2612_clock=sn76489_clock=0x1000000;
   ym2612_index=sn76489_index=0;
   scan_line=0;
+  uint64_t begin=esp_timer_get_time(),vdp_us=0;
+  const bool measure=(profileFrames%7==0);
   while(scan_line<lines){
     m68k_run(system_clock+VDP_CYCLES_PER_LINE);
     z80_run(system_clock+VDP_CYCLES_PER_LINE);
-    if(present&&scan_line<screen_height)gwenesis_vdp_render_line(scan_line);
+    if(present&&scan_line<screen_height){
+      if(measure){uint64_t t=esp_timer_get_time();gwenesis_vdp_render_line(scan_line);vdp_us+=esp_timer_get_time()-t;}
+      else gwenesis_vdp_render_line(scan_line);
+    }
     if(scan_line==0||scan_line>screen_height)hint_counter=REG10_LINE_COUNTER;
     if(--hint_counter<0){
       if(REG0_LINE_INTERRUPT&&scan_line<=screen_height){
@@ -75,16 +89,26 @@ void md_frame(uint8_t k,bool present){
     system_clock+=VDP_CYCLES_PER_LINE;
   }
   m68k.cycles-=system_clock;
-  if(!present)return;
+  uint64_t core_us=esp_timer_get_time()-begin;
+  if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;if(present)profileDraws++;}
+  uint64_t scaleStart=esp_timer_get_time();
+  if(present){int prev=-1;
   for(unsigned y=0;y<288;y++){
-    const uint8_t *s=video+160+(y*height/288)*320;
-    uint16_t *d=out+y*320;
-    if(width==320){for(unsigned x=0;x<320;x++)d[x]=CRAM565[s[x]];}
-    else for(unsigned x=0;x<320;x+=5){
-      unsigned a=x*4/5;uint16_t c=CRAM565[s[a]];
-      d[x]=d[x+1]=c;d[x+2]=CRAM565[s[a+1]];d[x+3]=CRAM565[s[a+2]];d[x+4]=CRAM565[s[a+3]];
+    int sy=y*height/288;
+    if(sy!=prev){
+      memcpy(indexrow,video+160+sy*320,width);
+      if(width==320){for(unsigned x=0;x<320;x++)rgbrow[x]=CRAM565[indexrow[x]];}
+      else for(unsigned x=0,a=0;x<320;x+=5,a+=4){
+        uint16_t c=CRAM565[indexrow[a]];
+        rgbrow[x]=rgbrow[x+1]=c;rgbrow[x+2]=CRAM565[indexrow[a+1]];rgbrow[x+3]=CRAM565[indexrow[a+2]];rgbrow[x+4]=CRAM565[indexrow[a+3]];
+      }
+      prev=sy;
     }
+    memcpy(out+y*320,rgbrow,sizeof(rgbrow));
   }
+  if(measure)profileScale+=esp_timer_get_time()-scaleStart;
+  }
+  if(++profileFrames>=126){printf("GEN_PROF cpu=%u us vdp=%u us scale=%u us samples=%u drawn=%u\n",(unsigned)(profileCPU/18),(unsigned)(profileDraws?profileVDP/profileDraws:0),(unsigned)(profileDraws?profileScale/profileDraws:0),18,profileDraws);profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=0;}
 }
 unsigned md_period(void){return period;}
 void md_stop(void){active=false;free(VRAM);free(video);VRAM=video=NULL;ROM_DATA=NULL;out=NULL;}

@@ -27,6 +27,8 @@ static bool nesMode=false,mdMode=false,home=true;
 static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
+static unsigned mdDiv=2,mdSeq=0;
+static uint32_t mdDrawUs=0,mdCoreUs=0;
 static size_t page=0;
 static String status;
 struct Point{uint16_t x,y;};
@@ -97,7 +99,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 008 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 009 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -107,7 +109,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 008":nesMode?"NES / BUILD 008":"GAME BOY / BUILD 008",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 009":nesMode?"NES / BUILD 009":"GAME BOY / BUILD 009",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
@@ -156,7 +158,7 @@ static bool load(const String &p){
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
-  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=2;mdSeq=0;mdDrawUs=mdCoreUs=0;
   playing=true;gameUI();return true;
 }
 void setup(){
@@ -213,9 +215,11 @@ void loop(){
   }
   const uint32_t period=mdMode?md_period():nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
-  const bool present=!lastPresented || (!mdMode && lastWork+500<period);
+  const bool present=mdMode?(mdSeq++%mdDiv==0):(!lastPresented || lastWork+500<period);
+  uint32_t coreStart=micros();
   if(mdMode)md_frame(keys,present);else if(nesMode)nes_core_frame(keys,present);else core_frame(keys);
-  if(present){lcd.draw16bitRGBBitmap(80,10,frame,320,288);perfShown++;}
+  if(mdMode)mdCoreUs+=micros()-coreStart;
+  if(present){uint32_t t=micros();lcd.draw16bitRGBBitmap(80,10,frame,320,288);if(mdMode)mdDrawUs+=micros()-t;perfShown++;}
   lastPresented=present;
   lastWork=micros()-tickStart;
   perfFrames++;perfWork+=lastWork;
@@ -223,9 +227,15 @@ void loop(){
   uint32_t elapsedMs=millis()-perfStart;
   if(elapsedMs>=3000){
     Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",
-      nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,
+      mdMode?"MD":nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,
       (unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,
       (unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+    if(mdMode){
+      float fps=perfFrames*1000.0f/elapsedMs,target=1000000.0f/period;
+      Serial.printf("MD PERF core=%u us lcd=%u us frameskip=%u target=%.1f\n",(unsigned)(mdCoreUs/perfFrames),(unsigned)(perfShown?mdDrawUs/perfShown:0),mdDiv-1,target);
+      if(fps<target-3&&mdDiv<4)mdDiv++;else if(fps>=target-1&&mdDiv>2)mdDiv--;
+      mdCoreUs=mdDrawUs=0;
+    }
     perfStart=millis();perfFrames=perfShown=perfWork=perfOver=0;
   }
   uint32_t elapsed=micros()-tickStart;

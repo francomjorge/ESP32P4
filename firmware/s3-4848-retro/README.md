@@ -55,3 +55,6 @@ User reported 006 alpha corruption and game stalls. Restore confirmed 005 emulat
 
 ## Build 008 — experimental Sega Mega Drive
 Uses confirmed 005 graphics path, no 006/007 fullscreen changes. Gwenesis from Retro-Go pinned revision 4ced120, source + upstream license included. Adds SEGA tab, raw .md/.gen/.bin ROMs with SEGA header (up to 4 MiB) under /roms/md, ABC/Start controls, Z80 active, audio muted, 30 FPS max presentation; PAL frame period based on core mode. No save states, SMD, 32X or Sega CD. User ROMs are not committed. No physical compatibility or FPS claims.
+
+## Build 009 — Sega performance
+Preserves 008D on experimental-s3-008d and 005 stable. Optimize Gwenesis only at O2, prefer internal SRAM for indexed video, convert each unique source row once, adaptive Mega Drive frameskip 1–3, instrument CPU/VDP/scaler/LCD costs and correct MD diagnostic label. Same display path, Z80, ROMs and DIO40. Target normal game speed before arcade work; no physical FPS claims.

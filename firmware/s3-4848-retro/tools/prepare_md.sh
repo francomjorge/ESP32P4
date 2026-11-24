@@ -13,7 +13,7 @@ cp "$tmp/gwenesis/components/gwenesis/"{LICENSE,README.md,gwenesis.h} lib/gwenes
 # PlatformIO LDF needs the public header under src and an explicit manifest.
 sed 's@"src/@"@g' lib/gwenesis/gwenesis.h > lib/gwenesis/src/gwenesis.h
 cat > lib/gwenesis/library.json <<'JSON'
-{"name":"gwenesis","version":"0.0.1","build":{"srcDir":"src","srcFilter":["+<*>","-<cpus/Z80/Debug.c>","-<cpus/Z80/ConDebug.c>"]},"frameworks":"*","platforms":"*"}
+{"name":"gwenesis","version":"0.0.1","build":{"srcDir":"src","flags":["-O2"],"srcFilter":["+<*>","-<cpus/Z80/Debug.c>","-<cpus/Z80/ConDebug.c>"]},"frameworks":"*","platforms":"*"}
 JSON
 find lib/gwenesis -name '*.o' -delete
 # Use caller-owned padded ROM, not a redundant second copy.
@@ -32,5 +32,9 @@ s=p.read_text()
 assert "screen_buffer_line = ptr_screen_buffer;" in s and "screen_buffer = ptr_screen_buffer;" in s
 s=s.replace("screen_buffer_line = ptr_screen_buffer;","screen_buffer_line = (uint8_t *)ptr_screen_buffer;").replace("screen_buffer = ptr_screen_buffer;","screen_buffer = (uint8_t *)ptr_screen_buffer;")
 p.write_text(s)
+# Force performance optimization only for Gwenesis translation units (not NES/GB).
+for p in Path("lib/gwenesis/src").rglob("*.c"):
+    s=p.read_text()
+    p.write_text('#pragma GCC optimize ("O2")\n'+s)
 PY
 tar -czf dist/sources/gwenesis-source.tar.gz -C lib gwenesis
