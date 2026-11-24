@@ -63,6 +63,34 @@ s=p.read_text()
 assert "screen_buffer_line = ptr_screen_buffer;" in s and "screen_buffer = ptr_screen_buffer;" in s
 s=s.replace("screen_buffer_line = ptr_screen_buffer;","screen_buffer_line = (uint8_t *)ptr_screen_buffer;").replace("screen_buffer = ptr_screen_buffer;","screen_buffer = (uint8_t *)ptr_screen_buffer;")
 p.write_text(s)
+# Optional diagnostic mode: advance YM2612 timer/status/CSM transitions with exactly
+# the same sample count and call boundaries, without generating unused FM samples.
+p=Path("lib/gwenesis/src/sound/ym2612.c")
+s=p.read_text()
+old="static inline void YM2612Update(int16_t *buffer, int length)\n{"
+assert s.count(old)==1
+s=s.replace(old, """extern int prisma_audio_timers_only;
+static inline void YM2612Update(int16_t *buffer, int length)
+{
+  if (prisma_audio_timers_only)
+  {
+    for (int i=0; i<length; i++)
+    {
+      ym2612.OPN.SL3.key_csm <<= 1;
+      INTERNAL_TIMER_A();
+      if (ym2612.OPN.SL3.key_csm & 2)
+      {
+        FM_KEYOFF_CSM(&ym2612.CH[2],SLOT1);
+        FM_KEYOFF_CSM(&ym2612.CH[2],SLOT2);
+        FM_KEYOFF_CSM(&ym2612.CH[2],SLOT3);
+        FM_KEYOFF_CSM(&ym2612.CH[2],SLOT4);
+        ym2612.OPN.SL3.key_csm = 0;
+      }
+    }
+    INTERNAL_TIMER_B(length);
+    return;
+  }""")
+p.write_text(s)
 # Force performance optimization only for Gwenesis translation units (not NES/GB).
 for p in Path("lib/gwenesis/src").rglob("*.c"):
     s=p.read_text()

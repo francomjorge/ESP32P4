@@ -53,10 +53,10 @@ static void splash(Arduino_RGB_Display& d){
  bg(d,-1);uint16_t white=0xffff;
  d.drawTriangle(240,84,180,193,300,193,white);d.drawTriangle(240,87,183,191,297,191,white);d.drawFastHLine(95,151,125,white);
  const uint16_t colors[]={0xf9a8,0xfd40,0xff60,0x67e8,0x4dff,0xb39f};for(int i=0;i<6;i++){d.drawLine(259,151,384,114+i*15,colors[i]);d.drawLine(259,152,384,115+i*15,colors[i]);}
- center(d,240,250,"PRISMA",6,white);center(d,240,309,"R E T R O",3,0xb59e);center(d,240,365,"8 / 16 BIT ENTERTAINMENT",2,0x94b2);center(d,240,407,"TOCA PARA INICIAR",2,0xffff);center(d,240,455,"ESP32-S3 / BUILD 023",1,0x94b2);
+ center(d,240,250,"PRISMA",6,white);center(d,240,309,"R E T R O",3,0xb59e);center(d,240,365,"8 / 16 BIT ENTERTAINMENT",2,0x94b2);center(d,240,407,"TOCA PARA INICIAR",2,0xffff);center(d,240,455,"ESP32-S3 / BUILD 024",1,0x94b2);
 }
 static void home(Arduino_RGB_Display& d,const unsigned counts[3]){
- bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);text(d,415,19,"023",2,0x9cfa);text(d,20,47,"SELECT SYSTEM",2,0x94b2);
+ bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);text(d,415,19,"024",2,0x9cfa);text(d,20,47,"SELECT SYSTEM",2,0x94b2);
  for(int i=0;i<3;i++){const auto&t=themes[i];int y=78+i*122;d.fillRoundRect(16,y,448,112,10,t.card);d.drawRoundRect(16,y,448,112,10,t.edge);console(d,32,y+19,2,i);text(d,126,y+15,t.name,i==1?2:3,t.ink);text(d,126,y+43,t.sub,1,t.muted);text(d,126,y+65,String(t.bits)+" / "+counts[i]+" JUEGOS",2,t.ink);text(d,432,y+45,">",3,t.muted);}
  center(d,240,459,"TOUCH TO EXPLORE",1,0x94b2);
 }

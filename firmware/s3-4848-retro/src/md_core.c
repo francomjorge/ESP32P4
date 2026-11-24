@@ -23,6 +23,8 @@ static uint8_t *video,*spareVideo;
 static int videoWidth=320,videoHeight=224;
 static bool active;
 static bool z80Enabled=true,audioTest=true;
+int prisma_audio_timers_only=0;
+void md_set_audio_timer_only(bool enabled){if(!active)prisma_audio_timers_only=enabled?1:0;}
 static uint64_t audioSamples,audioAbsSum,audioEndUs;
 static unsigned audioPeak,audioFrames;
 static int16_t pcmMix[2048];
@@ -61,7 +63,7 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=profile68k=profileZ80=0;
   audioSamples=audioAbsSum=audioEndUs=0;audioPeak=audioFrames=0;
   diagFrames=diagPCChanges=diagVideoChanges=diagRendered=diagPC=diagHash=0;diagKeys=0;
-  printf("MD PROFILE Z80=%s PCM=%s output=NONE\n",z80Enabled?"ON":"OFF",audioTest?"ON":"OFF");
+  printf("MD PROFILE Z80=%s PCM=%s FM=%s output=NONE\n",z80Enabled?"ON":"OFF",audioTest?"ON":"OFF",prisma_audio_timers_only?"TIMERS":"SYNTH");
   printf("MD buffers VRAM=%p video=%p free_internal=%u\n",VRAM,video,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   return 0;
 }
@@ -123,7 +125,7 @@ void md_frame(uint8_t k,bool present){
     gwenesis_SN76489_run(system_clock);
     int n=ym2612_index<sn76489_index?ym2612_index:sn76489_index;
     if(n<0)n=0;if(n>2048)n=2048;
-    for(int i=0;i<n;i++){
+    if(!prisma_audio_timers_only)for(int i=0;i<n;i++){
       int v=((int)gwenesis_ym2612_buffer[i]+(int)gwenesis_sn76489_buffer[i])/2;
       pcmMix[i]=(int16_t)v;
       unsigned mag=(unsigned)(v<0?-v:v);
@@ -150,7 +152,7 @@ void md_frame(uint8_t k,bool present){
   uint64_t core_us=esp_timer_get_time()-begin;
   if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;profile68k+=cpu68_us;profileZ80+=z80_us;if(present)profileDraws++;}
   if(audioFrames>=126){
-    printf("MD AUDIO PCM samples/frame=%u peak=%u meanabs=%u finalize_mix=%u us output=NONE\n",
+    printf("MD AUDIO %s samples/frame=%u peak=%u meanabs=%u finalize_mix=%u us output=NONE\n",prisma_audio_timers_only?"TIMERS":"PCM",
       (unsigned)(audioSamples/audioFrames),audioPeak,(unsigned)(audioSamples?audioAbsSum/audioSamples:0),(unsigned)(audioEndUs/audioFrames));
     audioSamples=audioAbsSum=audioEndUs=0;audioPeak=audioFrames=0;
   }

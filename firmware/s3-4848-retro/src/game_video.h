@@ -40,6 +40,12 @@ static void drawKey(Arduino_RGB_Display& lcd,const Key& k){
  lcd.drawRoundRect(k.x,k.y,k.w,k.h,8,0xdedf);
  lcd.setTextSize(2);lcd.setTextColor(0xffff);lcd.setCursor(k.x+(k.w-12*strlen(k.label))/2,k.y+(k.h-16)/2);lcd.print(k.label);
 }
+static void scaleIndexed(uint16_t* dst,const uint8_t* src,const uint16_t* pal,int sw,int w,bool sega){
+ if(sega&&sw==320&&w==480){
+  // floor(x*320/480): A,A,B. Two sequential ROM-index reads per three output pixels.
+  for(int j=0;j<160;j++){uint16_t a=pal[src[2*j]],b=pal[src[2*j+1]];dst[3*j]=a;dst[3*j+1]=a;dst[3*j+2]=b;}
+ }else for(int j=0;j<w;j++)dst[j]=pal[src[xmap[j]]];
+}
 static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal,const uint16_t* rgb,int sw,int sh,int pitch,Options o){
  if(sw<=0||sh<=0||sw>480||sh>480||pitch<sw||(!rgb&&(!idx||!pal)))return;
  int x,y,w,h;geometry(sw,sh,o.layout,x,y,w,h);
@@ -62,12 +68,19 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
   int rows=min(8,h-top);
   for(int row=0;row<rows;row++){
    int sy=ymap[top+row];uint16_t* dst=strip+row*w;
-   if(sy!=prev){
-    if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
-    else {const uint8_t* src=idx+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=pal[src[xmap[j]]];}
+   if(o.sega&&!o.overlay&&!rgb){
+    if(sy!=prev)scaleIndexed(dst,idx+sy*pitch,pal,sw,w,true);
+    else memcpy(dst,row?dst-w:scaledRow,w*2);
+    if(row==rows-1)memcpy(scaledRow,dst,w*2);
     prev=sy;
+   }else{
+    if(sy!=prev){
+     if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
+     else scaleIndexed(scaledRow,idx+sy*pitch,pal,sw,w,o.sega);
+     prev=sy;
+    }
+    memcpy(dst,scaledRow,w*2);
    }
-   memcpy(dst,scaledRow,w*2);
   }
   if(o.overlay){for(const auto& k:keys)if(!o.sega||k.bit!=4)tint(k,x,y+top,w,rows);if(o.sega)tint(segaC,x,y+top,w,rows);}
   lcd.draw16bitRGBBitmap(x,y+top,strip,w,rows);

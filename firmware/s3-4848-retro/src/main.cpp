@@ -33,8 +33,8 @@ static uint8_t layoutMode=GameVideo::FULL;
 static const char* layoutNames[]={"FULL","FIT","NATIVE"};
 static size_t selected=0;
 // COMP: all scanlines + chip timers, synchronous. PCM: timers with skipped rendering.
-static unsigned mdVideoMode=1; // PCM: keep sound chip timing, skip unused rendering
-static const char *mdModes[]={"COMP","PCM","20A","20S"};
+static unsigned mdVideoMode=4; // TIMER: experimental FM timers without sample synthesis
+static const char *mdModes[]={"COMP","PCM","20A","20S","TIMER"};
 static uint32_t phase=0,heartbeat=0;
 static uint32_t maxWork=0;
 static void markPhase(uint32_t p){__atomic_store_n(&phase,p,__ATOMIC_RELAXED);}
@@ -214,7 +214,7 @@ static bool load(const String &p){
   else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||(!nesMode&&!mdMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
   if(ram)memset(ram,0xFF,128*1024);if(frame)memset(frame,0,320*288*sizeof(uint16_t));
-  if(mdMode){md_set_z80(true);md_set_audio_test(mdVideoMode<2);}
+  if(mdMode){md_set_z80(true);md_set_audio_test(mdVideoMode<2||mdVideoMode==4);md_set_audio_timer_only(mdVideoMode==4);}
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
@@ -222,7 +222,7 @@ static bool load(const String &p){
   perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 023 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 024 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -239,10 +239,10 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  Serial.println("BOOT 023 private ROM init");private_rom_init();
-  Serial.printf("BOOT 023 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 023 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 023 splash ready / waiting touch");
+  Serial.println("BOOT 024 private ROM init");private_rom_init();
+  Serial.printf("BOOT 024 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 024 splash begin");RetroUI::splash(lcd);
+  Serial.println("BOOT 024 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -252,7 +252,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 023 home begin");homeUI();Serial.println("BOOT 023 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 024 home begin");homeUI();Serial.println("BOOT 024 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -264,7 +264,7 @@ void loop(){
         if(abs(dy)<36&&abs(dx)<36){
           if(hit(p,14,10,100,48))menu();
           else if(hit(p,16,369,150,48)){layoutMode=(layoutMode+1)%3;detailUI();}
-          else if(mdMode&&hit(p,178,369,150,48)){mdVideoMode=(mdVideoMode+1)%4;detailUI();}
+          else if(mdMode&&hit(p,178,369,150,48)){mdVideoMode=(mdVideoMode+1)%5;detailUI();}
           else if(hit(p,16,426,448,48)){const auto&t=RetroUI::themes[systemId()];RetroUI::bg(lcd,systemId());RetroUI::center(lcd,240,210,"CARGANDO...",3,t.ink);if(!load(paths[selected]))menu();}
         }
       }else if(abs(dy)>55&&abs(dy)>abs(dx)){
@@ -292,7 +292,7 @@ void loop(){
   const uint32_t period=mdMode?md_period():nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
   const bool due=mdSeq++%mdDiv==0;
-  const bool async=(nesMode||(mdMode&&(mdVideoMode==1||mdVideoMode==2)))&&AsyncVideo::enabled();
+  const bool async=(nesMode||(mdMode&&(mdVideoMode==1||mdVideoMode==2||mdVideoMode==4)))&&AsyncVideo::enabled();
   const bool present=due&&(!async||AsyncVideo::ready());
   if(due&&!present)droppedFrames++;
   markPhase(2);
