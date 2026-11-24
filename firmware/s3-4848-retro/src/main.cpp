@@ -29,6 +29,7 @@ static String status;
 struct Point{uint16_t x,y;};
 static Point points[5];
 static uint8_t npoints=0;
+static uint32_t lastTouchReport=0;
 
 static bool readReg(uint16_t reg,uint8_t *out,uint8_t n){
   if(!addr)return false;
@@ -44,7 +45,8 @@ static void clearTouch(){
 static void pollTouch(){
   uint8_t st=0;
   if(!readReg(0x814E,&st,1)){npoints=0;return;}
-  if(!(st&0x80))return;
+  if(!(st&0x80)){if(millis()-lastTouchReport>150)npoints=0;return;}
+  lastTouchReport=millis();
   uint8_t count=st&15; npoints=0;
   if(count<=5){
     uint8_t raw[40];
@@ -70,8 +72,8 @@ static bool hit(Point p,int x,int y,int w,int h){
 }
 static void scan(bool includeSD=false){
   paths.clear();page=0;
-  for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
   if(nesMode)for(unsigned i=0;i<private_rom_count();i++)paths.push_back(String("#")+private_rom_name(i));
+  for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
   size_t builtinCount=paths.size();
   Serial.printf("ROM library %s: %u internal games\n",nesMode?"NES":"GB",(unsigned)builtinCount);
   for(const auto &g:builtins)if(g.nes==nesMode)Serial.printf("  %s: %u bytes\n",g.name,(unsigned)g.size);
@@ -102,7 +104,8 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA RETRO",3,ACC);
-  textAt(18,52,nesMode?"NES / BUILD 004":"GAME BOY / BUILD 004",2);button(360,12,106,38,"HOME");
+  textAt(18,52,nesMode?"NES / BUILD 004B":"GAME BOY / BUILD 004B",2);
+  button(280,8,86,38,"GB");button(376,8,90,38,"NES");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
@@ -163,7 +166,8 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  private_rom_init();nesMode=private_rom_count()>0;scan();menu();
+  private_rom_init();nesMode=true;scan();menu();
+  Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
   if(!addr){delay(100);return;}
@@ -171,9 +175,11 @@ void loop(){
   if(!playing){
     if(npoints&&!wasDown){
       Point p=points[0];
+      Serial.printf("TOUCH x=%u y=%u home=%u nes=%u\n",p.x,p.y,home,nesMode);
       if(home){
         if(hit(p,20,110,440,135)||hit(p,20,262,440,135)){nesMode=p.y>=262;scan();menu();}
-      }else if(hit(p,360,12,106,38)){homeUI();}
+      }else if(hit(p,280,0,94,50)){nesMode=false;scan();menu();}
+      else if(hit(p,374,0,106,50)){nesMode=true;scan();menu();}
       else if(hit(p,14,420,110,45)){if(page)page--;menu();}
       else if(hit(p,145,420,170,45)){scan(true);menu();}
       else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}
