@@ -25,5 +25,12 @@ p.write_text(s)
 p=Path("lib/gwenesis/src/cpus/M68K/m68k.h")
 s=p.read_text().replace("ROM_DATA[((A) ^ 1)]","ROM_DATA[(((A)&0x3fffff) ^ 1)]").replace("ROM_DATA[(A)]","ROM_DATA[((A)&0x3fffff)]")
 p.write_text(s)
+# GCC 14 treats the upstream indexed-pixel pointer mismatch as an error.
+# The interface accepts uint16_t*, but its actual pixel format is uint8_t indices.
+p=Path("lib/gwenesis/src/vdp/gwenesis_vdp_gfx.c")
+s=p.read_text()
+assert "screen_buffer_line = ptr_screen_buffer;" in s and "screen_buffer = ptr_screen_buffer;" in s
+s=s.replace("screen_buffer_line = ptr_screen_buffer;","screen_buffer_line = (uint8_t *)ptr_screen_buffer;").replace("screen_buffer = ptr_screen_buffer;","screen_buffer = (uint8_t *)ptr_screen_buffer;")
+p.write_text(s)
 PY
 tar -czf dist/sources/gwenesis-source.tar.gz -C lib gwenesis
