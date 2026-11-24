@@ -76,3 +76,6 @@ Golden Axe 011 measured 55.5–58.2 emulation fps, 14–15 displayed fps, LCD wo
 
 ## Build 015 — audio synthesis diagnostics (no physical output)
 Audio is a mandatory acceptance requirement for MD/NES/GB. Sega Z80 always ON in this build. PCM ON/OFF in SEGA library compares native YM2612 and SN76489 synthesis, synchronizes both at frame end and measures sample count, peak, mean absolute level and finalize/mix cost; full CPU timing includes synthesis during register access. No physical audio output: Guition 4848S040 speaker and relay variants share GPIO1/2/40; do not drive these until exact hardware routing and speaker confirmed. NES/GB audio not yet implemented. No audio/FPS hardware claims. Preserve 014 separately.
+
+## Build 016 — video-first CPU performance
+User prioritizes video stability and FPS; physical audio postponed. Default PCM OFF, Z80 ON. Existing PCM synthesis test remains available, no physical audio GPIO used. Try O3 for M68K and Z80 interpreter translation units in addition to existing VDP O3, without modifying instruction semantics or clock ratios. Preserve 015 and earlier baselines. Existing per-CPU timing, MD BUDGET, zero-copy and conservative frameskip retained. No hardware FPS improvement asserted until comparison.

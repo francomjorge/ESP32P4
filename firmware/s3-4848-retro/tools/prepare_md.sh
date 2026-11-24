@@ -35,8 +35,8 @@ p.write_text(s)
 # Force performance optimization only for Gwenesis translation units (not NES/GB).
 for p in Path("lib/gwenesis/src").rglob("*.c"):
     s=p.read_text()
-    # A/B: only the scanline renderer gets O3; keep CPU, bus and Z80 at O2.
-    opt="O3" if p.name=="gwenesis_vdp_gfx.c" else "O2"
+    # A/B: optimize interpreter and scanline renderer; preserve instruction cycles and bus timing.
+    opt="O3" if p.name in ("gwenesis_vdp_gfx.c","m68kcpu.c","Z80.c") else "O2"
     p.write_text('#pragma GCC optimize ("'+opt+'")\n'+s)
 PY
 tar -czf dist/sources/gwenesis-source.tar.gz -C lib gwenesis

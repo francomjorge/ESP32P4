@@ -25,7 +25,7 @@ static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,mdMode=false,home=true;
-static bool mdAudioTest=true;
+static bool mdAudioTest=false;
 static bool playing=false,sdOk=false,wasDown=false;
 static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastWork=0;
 static bool lastPresented=false;
@@ -106,7 +106,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 015 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 016 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -116,7 +116,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 015":nesMode?"NES / BUILD 015":"GAME BOY / BUILD 015",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 016":nesMode?"NES / BUILD 016":"GAME BOY / BUILD 016",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
   if(mdMode){textAt(18,81,status.substring(0,22),2,ACC);button(308,72,158,38,mdAudioTest?"PCM ON":"PCM OFF");}
   else textAt(18,81,status,2,ACC);
