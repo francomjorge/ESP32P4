@@ -78,15 +78,6 @@ static void scaleIndexed(uint16_t* dst,const uint8_t* src,const uint16_t* pal,in
 static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal,const uint16_t* rgb,int sw,int sh,int pitch,Options o){
  if(sw<=0||sh<=0||sw>480||sh>480||pitch<sw||(!rgb&&(!idx||!pal)))return;
  int x,y,w,h;geometry(sw,sh,o.layout,x,y,w,h);
- if(oldLayout!=o.layout||oldW!=w||oldH!=h||(o.layout!=FULL&&oldOverlay&&!o.overlay)){
-  lcd.fillScreen(0);oldLayout=o.layout;oldW=w;oldH=h;
- }
- oldOverlay=o.overlay;
- if(o.layout==NATIVE&&!o.overlay){
-  if(rgb)lcd.draw16bitRGBBitmap(x,y,const_cast<uint16_t*>(rgb),sw,sh);
-  else lcd.drawIndexedBitmap(x,y,const_cast<uint8_t*>(idx),const_cast<uint16_t*>(pal),sw,sh,pitch-sw);
-  return;
- }
  if(mapSW!=sw||mapSH!=sh||mapW!=w||mapH!=h){
   for(int j=0;j<w;j++)xmap[j]=(uint32_t)j*sw/w;
   for(int j=0;j<h;j++)ymap[j]=(uint32_t)j*sh/h;
@@ -94,8 +85,8 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
  }
  // When overlay is visible, compose a complete 480-wide image including margins.
  // Without overlay, retain the same safe library transfer and narrow FIT/NATIVE.
- const int outX=o.overlay?0:x,outY=o.overlay?0:y;
- const int outW=o.overlay?480:w,outH=o.overlay?480:h;
+ const int outX=0,outY=0,outW=480,outH=480;
+ uint16_t* target=lcd.getFramebuffer();
  int prev=-1;
  for(int top=0;top<outH;top+=STRIP_ROWS){
   int rows=min(STRIP_ROWS,outH-top);
@@ -103,7 +94,7 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
    int screenY=outY+top+row;
    uint16_t* dst=strip+row*outW;
    if(screenY<y||screenY>=y+h){memset(dst,0,outW*2);continue;}
-   if(o.overlay&&w<480){memset(dst,0,outW*2);dst+=x;}
+   if(w<480){memset(dst,0,outW*2);dst+=x;}
    int sy=ymap[screenY-y];
    if(sy!=prev){
     if(rgb){const uint16_t* src=rgb+sy*pitch;for(int j=0;j<w;j++)scaledRow[j]=src[xmap[j]];}
@@ -113,7 +104,8 @@ static void draw(Arduino_RGB_Display& lcd,const uint8_t* idx,const uint16_t* pal
    memcpy(dst,scaledRow,w*2);
   }
   if(o.overlay)for(const auto& k:keys)compositeKey(k,top,rows);
-  lcd.draw16bitRGBBitmap(outX,outY+top,strip,outW,rows);
+  // Full-width bounded copy into inactive DMA framebuffer only.
+  memcpy(target+top*480,strip,rows*480*sizeof(uint16_t));
  }
 }
 }

@@ -7,14 +7,15 @@
 #include "nes_core.h"
 #include <esp_partition.h>
 #include "private_roms.h"
+#include "panel_present.h"
 #include "async_video.h"
 #include "retro_ui.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
   11,12,13,14,0, 8,20,3,46,9,10, 4,5,6,7,15,
-  1,10,8,50,1,10,8,20,0,8000000);
-static Arduino_RGB_Display lcd(480,480,&rgb,0,true,&panelBus,GFX_NOT_DEFINED,
+  1,10,8,50,1,10,8,20,0,8000000,false,0,0,480*10);
+static PrismaDisplay lcd(480,480,&rgb,0,false,&panelBus,GFX_NOT_DEFINED,
   st7701_type9_init_operations,sizeof(st7701_type9_init_operations));
 
 static const uint16_t BG=0x0842,FG=0xFFFF,ACC=0x5E9E,CARD=0x2124;
@@ -46,6 +47,7 @@ static uint32_t perfStart=0,perfFrames=0,perfShown=0,perfWork=0,perfOver=0,lastW
 static bool lastPresented=false;
 static constexpr unsigned frameDiv=2;
 static unsigned frameSeq=0,nextPresent=0;
+static uint32_t lastVsync=0;
 static uint32_t imageHash=0,imageChanges=0,imageSamples=0;
 static uint8_t diagKeys=0;
 static uint32_t queuedFrames=0,droppedFrames=0;
@@ -122,7 +124,7 @@ static void homeUI(){
  home=true;detail=false;unsigned counts[2]={0,0};
  for(const auto& g:builtins)counts[g.nes?1:0]++;
  for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[1]++;
- RetroUI::home(lcd,counts);
+ RetroUI::home(lcd,counts);lcd.present();
 }
 static void menu(){
  home=false;detail=false;int sys=systemId();const auto&t=RetroUI::themes[sys];
@@ -141,7 +143,7 @@ static void menu(){
  }
  RetroUI::button(lcd,14,424,92,48,"PREV",t);
  RetroUI::button(lcd,119,424,242,48,"LITE / "+String(paths.size())+" ROMS",t);
- RetroUI::button(lcd,374,424,92,48,"NEXT",t);
+ RetroUI::button(lcd,374,424,92,48,"NEXT",t);lcd.present();
 }
 static void detailUI(){
  if(selected>=paths.size()){menu();return;}
@@ -156,10 +158,10 @@ static void detailUI(){
  size_t bytes=romSize(p);
  RetroUI::text(lcd,20,340,String(t.bits)+" / "+origin(p)+(bytes?" / "+String((unsigned)(bytes/1024))+" KiB":""),2,t.muted);
  RetroUI::button(lcd,16,369,150,48,layoutNames[layoutMode],t);
- RetroUI::button(lcd,16,426,448,48,"JUGAR",t,true);
+ RetroUI::button(lcd,16,426,448,48,"JUGAR",t,true);lcd.present();
 }
 static void gameUI(){
- lcd.fillScreen(0);GameVideo::reset();overlay=false;overlayArmed=false;launchRelease=true;overlayMs=0;
+ lcd.fillScreen(0);lcd.present();GameVideo::reset();overlay=false;overlayArmed=false;launchRelease=true;overlayMs=0;
 }
 static void releaseGame(){
  markPhase(0);AsyncVideo::drain();if(nesMode)nes_core_stop();
@@ -193,10 +195,10 @@ static bool load(const String &p){
  Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
  Serial.printf("MEM ACTIVE heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=nextPresent=0;imageHash=imageChanges=imageSamples=0;diagKeys=0;
- queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);
+ queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);uint32_t ru,su,sc;AsyncVideo::stageStats(ru,su,sc);
  playing=true;gameUI();maxWork=0;markPhase(1);
- Serial.printf("RUN BUILD 027 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
- frameDeadline=micros();return true;
+ Serial.printf("RUN BUILD 028 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
+ lastVsync=lcd.vsyncTotal();frameDeadline=micros();return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -205,17 +207,19 @@ void setup(){
   pinMode(38,OUTPUT);digitalWrite(38,LOW);
   pinMode(42,OUTPUT);digitalWrite(42,HIGH);
   if(!lcd.begin()){Serial.println("LCD init failed");return;}
-  lcd.fillScreen(BG);digitalWrite(38,HIGH);
+  if(!lcd.initSwap()){Serial.println("LCD double-buffer init failed");return;}
+  Serial.println("LCD double-buffer ready / bounce=10 lines / pclk=8MHz");
+  lcd.fillScreen(BG);lcd.present();digitalWrite(38,HIGH);
   Serial.printf("LCD worker core0=%s\n",AsyncVideo::begin(lcd,BG)?"ready":"fallback sync");
   xTaskCreatePinnedToCore(stallMonitor,"retroMon",3072,nullptr,1,nullptr,0);
   Wire1.begin(19,45,400000);Wire1.setTimeOut(10);
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
-  Serial.println("BOOT 027 private ROM init");private_rom_init();
-  Serial.printf("BOOT 027 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 027 splash begin");RetroUI::splash(lcd);
-  Serial.println("BOOT 027 splash ready / waiting touch");
+  Serial.println("BOOT 028 private ROM init");private_rom_init();
+  Serial.printf("BOOT 028 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 028 splash begin");RetroUI::splash(lcd);lcd.present();
+  Serial.println("BOOT 028 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -225,7 +229,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 027 home begin");homeUI();Serial.println("BOOT 027 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 028 home begin");homeUI();Serial.println("BOOT 028 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -237,7 +241,7 @@ void loop(){
         if(abs(dy)<36&&abs(dx)<36){
           if(hit(p,14,10,100,48))menu();
           else if(hit(p,16,369,150,48)){layoutMode=(layoutMode+1)%3;detailUI();}
-          else if(hit(p,16,426,448,48)){const auto&t=RetroUI::themes[systemId()];RetroUI::bg(lcd,systemId());RetroUI::center(lcd,240,210,"CARGANDO...",3,t.ink);if(!load(paths[selected]))menu();}
+          else if(hit(p,16,426,448,48)){const auto&t=RetroUI::themes[systemId()];RetroUI::bg(lcd,systemId());RetroUI::center(lcd,240,210,"CARGANDO...",3,t.ink);lcd.present();if(!load(paths[selected]))menu();}
         }
       }else if(abs(dy)>55&&abs(dy)>abs(dx)){
         if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;menu();
@@ -284,7 +288,7 @@ void loop(){
     uint8_t *v=nesMode?nes_core_video(&w,&h,&pitch,&pal):core_video(&w,&h,&pitch,&pal);
     if(v&&pal){
       if(async){if(AsyncVideo::submit(v,pal,w,h,pitch,videoOptions))queuedFrames++;else droppedFrames++;}
-      else{GameVideo::draw(lcd,v,pal,nullptr,w,h,pitch,videoOptions);perfShown++;}
+      else{GameVideo::draw(lcd,v,pal,nullptr,w,h,pitch,videoOptions);lcd.present();perfShown++;}
     }
     drawUs+=micros()-t;
   }
@@ -297,6 +301,8 @@ void loop(){
     if(async)perfShown=workerCount;
     Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,(unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
     Serial.printf("VIDEO PERF core=%u us lcd=%u us submit=%u us fixed_div=%u queued=%u dropped=%u maxWork=%u\n",(unsigned)(coreUs/perfFrames),(unsigned)(async?(workerCount?workerUs/workerCount:0):(perfShown?drawUs/perfShown:0)),(unsigned)(queuedFrames?drawUs/queuedFrames:0),frameDiv,queuedFrames,droppedFrames,maxWork);
+    uint32_t vu=0,swu=0,vc=0;AsyncVideo::stageStats(vu,swu,vc);uint32_t vs=lcd.vsyncTotal();
+    Serial.printf("LCD PIPE render=%u us swap=%u us vsync=%.1f Hz\n",(unsigned)(vc?vu/vc:0),(unsigned)(vc?swu/vc:0),(vs-lastVsync)*1000.0/elapsedMs);lastVsync=vs;
     if(nesMode)Serial.printf("NES IMAGE samples=%u changes=%u hash=%08x keys=%02x\n",imageSamples,imageChanges,imageHash,diagKeys);
     imageSamples=imageChanges=0;
     queuedFrames=droppedFrames=coreUs=drawUs=maxWork=0;

@@ -6,19 +6,20 @@
 #include <esp_heap_caps.h>
 #include <esp_memory_utils.h>
 #include <string.h>
+#include "panel_present.h"
 #include "game_video.h"
 // One immutable queued frame. LCD belongs exclusively to worker during a job.
 // Producer never waits for LCD in the game loop; exit drains it before menu drawing.
 namespace AsyncVideo {
 static SemaphoreHandle_t idle=nullptr;
 static TaskHandle_t task=nullptr;
-static Arduino_RGB_Display *display=nullptr;
+static PrismaDisplay *display=nullptr;
 static uint8_t *snapshot=nullptr;
 static uint8_t *jobPixels=nullptr;
 static int jobPitch=0;
 static uint16_t palette[256];
 static int width,height,oldW=0,oldH=0;
-static uint32_t drawUs=0,drawCount=0;
+static uint32_t drawUs=0,drawCount=0,renderUs=0,swapUs=0,stageCount=0;
 static uint16_t bg;
 static GameVideo::Options options;
 static void worker(void *){
@@ -26,12 +27,16 @@ static void worker(void *){
     ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
     uint32_t start=micros();
     GameVideo::draw(*display,jobPixels,palette,nullptr,width,height,jobPitch,options);
-    __atomic_fetch_add(&drawUs,micros()-start,__ATOMIC_RELAXED);
+    uint32_t composed=micros();display->present();uint32_t end=micros();
+    __atomic_fetch_add(&renderUs,composed-start,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&swapUs,end-composed,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&stageCount,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&drawUs,end-start,__ATOMIC_RELAXED);
     __atomic_fetch_add(&drawCount,1,__ATOMIC_RELAXED);
     xSemaphoreGive(idle);
   }
 }
-static bool begin(Arduino_RGB_Display& lcd,uint16_t background){
+static bool begin(PrismaDisplay& lcd,uint16_t background){
   if(task)return true;
   display=&lcd;bg=background;
   snapshot=(uint8_t*)heap_caps_malloc(256*240,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
@@ -60,6 +65,7 @@ static bool submit(const uint8_t* src,const uint16_t* pal,int w,int h,int pitch,
 static void drain(){
   if(idle){xSemaphoreTake(idle,portMAX_DELAY);oldW=oldH=0;GameVideo::reset();xSemaphoreGive(idle);}
 }
+static void stageStats(uint32_t &r,uint32_t &s,uint32_t &n){r=__atomic_exchange_n(&renderUs,0,__ATOMIC_RELAXED);s=__atomic_exchange_n(&swapUs,0,__ATOMIC_RELAXED);n=__atomic_exchange_n(&stageCount,0,__ATOMIC_RELAXED);}
 static void stats(uint32_t &us,uint32_t &count){
   us=__atomic_exchange_n(&drawUs,0,__ATOMIC_RELAXED);
   count=__atomic_exchange_n(&drawCount,0,__ATOMIC_RELAXED);
