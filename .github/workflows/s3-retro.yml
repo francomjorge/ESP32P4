@@ -22,19 +22,19 @@ jobs:
       - run: |
           python -m venv /tmp/prisma-esp-venv
           /tmp/prisma-esp-venv/bin/pip install esptool==5.0.1 click==8.1.8
-          /tmp/prisma-esp-venv/bin/python -m esptool version
+          /tmp/prisma-esp-venv/bin/python -I -m esptool version
       - run: curl -fL --retry 3 https://raw.githubusercontent.com/deltabeard/Peanut-GB/d0bcca771c83a2638c93a9ae61f3d51f226dc905/peanut_gb.h -o src/peanut_gb.h
       - run: python tools/prepare_roms.py
       - name: Install platform and fix esptool executable resolution
         run: |
           pio pkg install
-          /tmp/prisma-esp-venv/bin/python -m esptool version
+          /tmp/prisma-esp-venv/bin/python -I -m esptool version
           python - <<'PY'
           from pathlib import Path
           import sys
           import os
           wrapper = Path("/tmp/prisma-esptool")
-          wrapper.write_text('#!/bin/sh\nexec /tmp/prisma-esp-venv/bin/python -m esptool "$@"\n')
+          wrapper.write_text('#!/bin/sh\nexec /tmp/prisma-esp-venv/bin/python -I -m esptool "$@"\n')
           wrapper.chmod(0o755)
           for p in (Path.home()/".platformio/platforms").glob("espressif32*/builder/main.py"):
               s = p.read_text()
@@ -49,7 +49,7 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode qio -o dist/PRISMA-RETRO-S3-001-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode qio -o dist/PRISMA-RETRO-S3-001-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
           cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-001-app.bin
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
