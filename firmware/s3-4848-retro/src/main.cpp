@@ -25,9 +25,9 @@ static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
 static bool nesMode=false,mdMode=false,home=true;
-// 20A and 20S isolate LCD worker; 15A reduces load, 30A tests headroom.
+// COMP: all scanlines + chip timers, synchronous. PCM: timers with skipped rendering.
 static unsigned mdVideoMode=0;
-static const char *mdModes[]={"20A","20S","15A","30A"};
+static const char *mdModes[]={"COMP","PCM","20A","20S"};
 static uint32_t phase=0,heartbeat=0;
 static uint32_t maxWork=0;
 static void markPhase(uint32_t p){__atomic_store_n(&phase,p,__ATOMIC_RELAXED);}
@@ -121,7 +121,7 @@ static void scan(bool includeSD=false){
 }
 static void homeUI(){
   home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
-  textAt(20,65,"BUILD 017 / SELECT SYSTEM",2);
+  textAt(20,65,"BUILD 018 / SELECT SYSTEM",2);
   lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
   textAt(40,140,"GAME BOY",4);textAt(40,194,"TOBU TOBU GIRL + MAS",2);
   lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
@@ -131,7 +131,7 @@ static void homeUI(){
 static void menu(){
   home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA",3,ACC);
-  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 017":nesMode?"NES / BUILD 017":"GAME BOY / BUILD 017",2);
+  textAt(18,52,mdMode?"MEGA DRIVE / BUILD 018":nesMode?"NES / BUILD 018":"GAME BOY / BUILD 018",2);
   button(206,8,76,38,"GB");button(292,8,82,38,"NES");button(384,8,84,38,"SEGA");
   if(mdMode){textAt(18,81,status.substring(0,22),2,ACC);button(308,72,158,38,mdModes[mdVideoMode]);}
   else textAt(18,81,status,2,ACC);
@@ -146,12 +146,13 @@ static void menu(){
 static void gameUI(){
   lcd.fillScreen(BG);
   button(10,8,64,45,"EXIT");
+  if(mdMode)textAt(8,65,mdModes[mdVideoMode],2,ACC);
   button(64,310,56,48,"UP");button(8,365,56,48,"LT");
   button(64,420,56,48,"DN");button(120,365,56,48,"RT");
   button(190,426,102,42,mdMode?"C":"SELECT");button(300,426,100,42,"START");
   button(335,355,62,60,"B");button(407,320,64,60,"A");
 }
-static void releaseGame(){markPhase(0);AsyncVideo::drain();if(mdMode)md_stop();else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
+static void releaseGame(){markPhase(0);AsyncVideo::drain();if(mdMode){md_diag();md_stop();}else if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
   File f;
   const BuiltinROM *internal=nullptr;
@@ -178,14 +179,14 @@ static bool load(const String &p){
   else {got=f.read(rom,bytes);f.close();}
   if(got!=bytes||(!nesMode&&!mdMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
   if(ram)memset(ram,0xFF,128*1024);if(frame)memset(frame,0,320*288*sizeof(uint16_t));
-  if(mdMode){md_set_z80(true);md_set_audio_test(false);}
+  if(mdMode){md_set_z80(true);md_set_audio_test(mdVideoMode<2);}
   int err=mdMode?md_start(rom,bytes,frame):nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
-  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?(mdVideoMode==2?4:mdVideoMode==3?2:3):2;mdSeq=0;goodWindows=0;
+  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;lastPresented=false;mdDiv=mdMode?3:2;mdSeq=0;goodWindows=0;
   mdPlainUs=mdPlainN=mdRenderUs=mdRenderN=0;mdCandidate=mdCandidateWindows=0;queuedFrames=droppedFrames=borrowedFrames=0;mdDrawUs=mdCoreUs=0;
   uint32_t u,n;AsyncVideo::stats(u,n);
-  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 017 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
+  playing=true;gameUI();maxWork=0;markPhase(1);Serial.printf("RUN BUILD 018 MD video=%s divisor=%u\n",mdMode?mdModes[mdVideoMode]:"n/a",mdDiv);frameDeadline=micros();shownW=shownH=0;return true;
 }
 void setup(){
   Serial.begin(115200);delay(200);
@@ -246,12 +247,12 @@ void loop(){
   const uint32_t period=mdMode?md_period():nesMode?16667:16743;
   // Present every frame when possible, alternate only after an expensive frame.
   const bool due=mdSeq++%mdDiv==0;
-  const bool async=(nesMode||(mdMode&&mdVideoMode!=1))&&AsyncVideo::enabled();
+  const bool async=(nesMode||(mdMode&&(mdVideoMode==1||mdVideoMode==2)))&&AsyncVideo::enabled();
   const bool present=due&&(!async||AsyncVideo::ready());
   if(due&&!present)droppedFrames++;
   markPhase(2);
   uint32_t coreStart=micros();
-  if(mdMode)md_frame(keys,present);else if(nesMode)nes_core_frame(keys,present);else core_frame(keys,present);
+  if(mdMode)md_frame(keys,present||mdVideoMode==0);else if(nesMode)nes_core_frame(keys,present);else core_frame(keys,present);
   mdCoreUs+=micros()-coreStart;
   markPhase(3);
   if(present){
@@ -285,6 +286,7 @@ void loop(){
   if(elapsedMs>=3000){
     uint32_t workerUs=0,workerCount=0;AsyncVideo::stats(workerUs,workerCount);
     if(async)perfShown=workerCount;
+    if(mdMode)md_diag();
     Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",
       mdMode?"MD":nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,
       (unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,

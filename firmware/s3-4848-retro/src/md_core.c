@@ -30,6 +30,13 @@ void md_set_audio_test(bool enabled){if(!active)audioTest=enabled;}
 static uint64_t profile68k,profileZ80;
 void md_set_z80(bool enabled){if(!active)z80Enabled=enabled;}
 static unsigned period=16667;
+static uint32_t diagFrames,diagPCChanges,diagVideoChanges,diagRendered,diagPC,diagHash;
+static uint8_t diagKeys;
+void md_diag(void){
+  if(!active)return;
+  printf("MD STATE frames=%u pc=%06x sr=%04x pcChanges=%u rendered=%u imageChanges=%u hash=%08x vdp=%04x keys=%02x PCM=%u\n", (unsigned)diagFrames,(unsigned)diagPC,(unsigned)m68k_get_reg(M68K_REG_SR),(unsigned)diagPCChanges,(unsigned)diagRendered,(unsigned)diagVideoChanges,(unsigned)diagHash,(unsigned)gwenesis_vdp_status,(unsigned)diagKeys,(unsigned)audioTest);
+  diagFrames=diagPCChanges=diagVideoChanges=diagRendered=0;
+}
 void gwenesis_io_get_buttons(void){}
 SaveState* saveGwenesisStateOpenForRead(const char* f){(void)f;return 0;}
 SaveState* saveGwenesisStateOpenForWrite(const char* f){(void)f;return 0;}
@@ -53,6 +60,7 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   (void)frame;active=true;period=16667;
   profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=profile68k=profileZ80=0;
   audioSamples=audioAbsSum=audioEndUs=0;audioPeak=audioFrames=0;
+  diagFrames=diagPCChanges=diagVideoChanges=diagRendered=diagPC=diagHash=0;diagKeys=0;
   printf("MD PROFILE Z80=%s PCM=%s output=NONE\n",z80Enabled?"ON":"OFF",audioTest?"ON":"OFF");
   printf("MD buffers VRAM=%p video=%p free_internal=%u\n",VRAM,video,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   return 0;
@@ -126,6 +134,19 @@ void md_frame(uint8_t k,bool present){
     audioEndUs+=esp_timer_get_time()-endStart;
   }
   m68k.cycles-=system_clock;
+  // Sample guest CPU progress and image content independently of LCD presentation.
+  uint32_t pc=m68k_get_reg(M68K_REG_PC);
+  if(diagFrames&&pc!=diagPC)diagPCChanges++;
+  diagPC=pc;diagKeys=k;diagFrames++;
+  if(present){
+    uint32_t hash=2166136261u;
+    for(int y=0;y<videoHeight;y+=16)for(int x=0;x<videoWidth;x+=16){
+      unsigned color=CRAM565[video[160+y*320+x]];
+      hash=(hash^color)*16777619u;
+    }
+    if(diagRendered&&hash!=diagHash)diagVideoChanges++;
+    diagHash=hash;diagRendered++;
+  }
   uint64_t core_us=esp_timer_get_time()-begin;
   if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;profile68k+=cpu68_us;profileZ80+=z80_us;if(present)profileDraws++;}
   if(audioFrames>=126){

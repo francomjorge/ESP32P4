@@ -14,6 +14,7 @@ bool md_video_can_flip(void);
 void md_video_flip(void);
 unsigned md_period(void);
 void md_stop(void);
+void md_diag(void);
 #ifdef __cplusplus
 }
 #endif
