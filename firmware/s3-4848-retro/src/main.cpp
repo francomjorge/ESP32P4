@@ -21,11 +21,34 @@ static Arduino_RGB_Display lcd(480,480,&rgb,0,false,&panelBus,GFX_NOT_DEFINED,
 
 static MenuCanvas menuCanvas;
 static Arduino_GFX& ui(){if(menuCanvas.ensure())return menuCanvas;return lcd;}
+struct UIRect {int x,y,w,h;};
+static uint16_t uiPatch[252*16];
+static uint32_t uiWrites=0,uiLastWrite=0,uiLastIdle=0;
 static void showUI(){
  uint32_t t=micros();
  if(menuCanvas.getFramebuffer())lcd.draw16bitRGBBitmap(0,0,menuCanvas.getFramebuffer(),480,480);
  lcd.flush(true);
- Serial.printf("UI PRESENT canvas=%u us=%u\n",menuCanvas.getFramebuffer()!=nullptr,(unsigned)(micros()-t));
+ uiWrites++;uiLastWrite=millis();
+ Serial.printf("UI PRESENT full pixels=230400 canvas=%u us=%u writes=%u\n",menuCanvas.getFramebuffer()!=nullptr,(unsigned)(micros()-t),uiWrites);
+}
+static void showUIRects(const UIRect* rects,size_t count){
+ uint32_t t=micros(),pixels=0;
+ uint16_t* src=menuCanvas.getFramebuffer();
+ for(size_t i=0;i<count;i++){
+  const auto& q=rects[i];
+  if(q.x<0||q.y<0||q.w<=0||q.w>252||q.h<=0||q.x+q.w>480||q.y+q.h>480)continue;
+  pixels+=q.w*q.h;
+  if(!src)continue; // fallback primitives already drawn into LCD
+  for(int y=0;y<q.h;y+=16){
+   int rows=min(16,q.h-y);
+   for(int j=0;j<rows;j++)memcpy(uiPatch+j*q.w,src+(q.y+y+j)*480+q.x,q.w*2);
+   lcd.draw16bitRGBBitmap(q.x,q.y+y,uiPatch,q.w,rows);
+  }
+ }
+ if(!pixels)return;
+ // Keep the validated 029 cache flush method; only the bitmap copies are regional.
+ lcd.flush(true);uiWrites++;uiLastWrite=millis();
+ Serial.printf("UI PRESENT dirty rects=%u pixels=%u us=%u writes=%u\n",(unsigned)count,pixels,(unsigned)(micros()-t),uiWrites);
 }
 static const uint16_t BG=0x0842,FG=0xFFFF,ACC=0x5E9E,CARD=0x2124;
 static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
@@ -134,40 +157,68 @@ static void homeUI(){
  for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[1]++;
  RetroUI::home(ui(),counts);showUI();
 }
+static UIRect cardRect(size_t row){return {12,76+(int)row*76,192,66};}
+static constexpr UIRect previewRect={216,76,252,296},layoutRect={162,420,112,48};
+static void drawCartRow(Arduino_GFX& d,size_t row){
+ const auto&t=RetroUI::themes[systemId()];auto q=cardRect(row);
+ d.fillRect(q.x,q.y,q.w,q.h,t.bg);
+ size_t idx=page*4+row;if(idx>=paths.size())return;
+ bool on=idx==selected;String n=displayName(paths[idx]);
+ uint16_t card=on?t.card:0x2124,ink=on?t.ink:0x9cf3,edge=on?t.edge:0x4a49;
+ d.fillRect(q.x,q.y,q.w,q.h,card);d.drawRect(q.x,q.y,q.w,q.h,edge);
+ if(on){d.drawRect(q.x+1,q.y+1,q.w-2,q.h-2,edge);d.fillRect(18,q.y+9,4,48,edge);}
+ RetroUI::text(d,29,q.y+13,n.substring(0,14),2,ink);
+ if(n.length()>14)RetroUI::text(d,29,q.y+36,n.substring(14,28),2,ink);
+}
+static void drawPreview(Arduino_GFX& d){
+ int sys=systemId();const auto&t=RetroUI::themes[sys];
+ d.fillRect(216,76,252,296,t.card);d.drawRect(216,76,252,296,t.edge);
+ if(paths.empty()||selected>=paths.size())return;
+ String n=displayName(paths[selected]);const uint16_t* art=nullptr;
+ for(const auto& e:PreviewArt::entries)if(n==e.name){art=e.pixels;break;}
+ d.fillRect(222,82,240,180,0x0842);
+ if(art)d.draw16bitRGBBitmap(222,82,const_cast<uint16_t*>(art),240,180);
+ else RetroUI::cart(d,305,98,74,144,sys,RetroUI::seed(n));
+ RetroUI::text(d,226,270,art?"IMAGEN DE REFERENCIA":"SIN PREVIEW",1,t.muted);
+ RetroUI::text(d,226,290,n.substring(0,19),2,t.ink);
+ if(n.length()>19)RetroUI::text(d,226,311,n.substring(19,38),2,t.ink);
+ RetroUI::text(d,226,342,String((unsigned)(romSize(paths[selected])/1024))+" KiB / "+t.bits,1,t.muted);
+}
+static void drawLayout(Arduino_GFX& d){
+ const auto&t=RetroUI::themes[systemId()];
+ d.fillRect(layoutRect.x,layoutRect.y,layoutRect.w,layoutRect.h,t.bg);
+ RetroUI::button(d,162,420,112,48,layoutNames[layoutMode],t);
+}
+static void fixSelection(){
+ if(paths.empty())selected=0;else if(selected>=paths.size()||selected/4!=page)selected=page*4;
+}
 static void menu(){
  home=false;detail=false;int sys=systemId();const auto&t=RetroUI::themes[sys];auto& d=ui();
- if(paths.empty())selected=0;else if(selected>=paths.size()||selected/4!=page)selected=page*4;
- RetroUI::bg(d,sys);
+ fixSelection();RetroUI::bg(d,sys);
  RetroUI::button(d,12,10,90,44,"HOME",t);
  RetroUI::text(d,114,12,t.name,3,t.ink);
  RetroUI::text(d,114,39,String(paths.size())+" CARTUCHOS",1,t.muted);
- for(size_t i=0;i<4&&page*4+i<paths.size();i++){
-  size_t idx=page*4+i;int y=76+i*76;bool on=idx==selected;
-  String n=displayName(paths[idx]);
-  uint16_t card=on?t.card:0x2124,ink=on?t.ink:0x9cf3,edge=on?t.edge:0x4a49;
-  d.fillRoundRect(12,y,192,66,8,card);d.drawRoundRect(12,y,192,66,8,edge);
-  if(on){d.drawRoundRect(13,y+1,190,64,8,edge);d.fillRect(18,y+9,4,48,edge);}
-  RetroUI::text(d,29,y+13,n.substring(0,14),2,ink);
-  if(n.length()>14)RetroUI::text(d,29,y+36,n.substring(14,28),2,ink);
- }
- d.fillRoundRect(216,76,252,296,8,t.card);d.drawRoundRect(216,76,252,296,8,t.edge);
- if(!paths.empty()){
-  String n=displayName(paths[selected]);const uint16_t* art=nullptr;
-  for(const auto& e:PreviewArt::entries)if(n==e.name){art=e.pixels;break;}
-  d.fillRect(222,82,240,180,0x0842);
-  if(art)d.draw16bitRGBBitmap(222,82,const_cast<uint16_t*>(art),240,180);
-  else RetroUI::cart(d,305,98,74,144,sys,RetroUI::seed(n));
-  RetroUI::text(d,226,270,art?"IMAGEN DE REFERENCIA":"SIN PREVIEW",1,t.muted);
-  RetroUI::text(d,226,290,n.substring(0,19),2,t.ink);
-  if(n.length()>19)RetroUI::text(d,226,311,n.substring(19,38),2,t.ink);
-  RetroUI::text(d,226,342,String((unsigned)(romSize(paths[selected])/1024))+" KiB / "+t.bits,1,t.muted);
- }
- RetroUI::text(d,14,390,status.substring(0,45),1,t.muted);
- RetroUI::button(d,12,420,68,48,"<",t);
- RetroUI::button(d,86,420,68,48,">",t);
- RetroUI::button(d,162,420,112,48,layoutNames[layoutMode],t);
- RetroUI::button(d,282,420,186,48,"JUGAR",t,true);
+ for(size_t i=0;i<4;i++)drawCartRow(d,i);
+ drawPreview(d);RetroUI::text(d,14,390,status.substring(0,45),1,t.muted);
+ RetroUI::button(d,12,420,68,48,"<",t);RetroUI::button(d,86,420,68,48,">",t);
+ drawLayout(d);RetroUI::button(d,282,420,186,48,"JUGAR",t,true);
  showUI();
+}
+static void changeCart(size_t idx){
+ if(idx>=paths.size()||idx/4!=page||idx==selected)return;
+ size_t old=selected;selected=idx;auto& d=ui();
+ UIRect rects[3];size_t n=0;
+ if(old/4==page&&old<paths.size()){drawCartRow(d,old%4);rects[n++]=cardRect(old%4);}
+ drawCartRow(d,idx%4);rects[n++]=cardRect(idx%4);
+ drawPreview(d);rects[n++]=previewRect;showUIRects(rects,n);
+}
+static void changePage(){
+ fixSelection();auto& d=ui();UIRect rects[5];
+ for(size_t i=0;i<4;i++){drawCartRow(d,i);rects[i]=cardRect(i);}
+ drawPreview(d);rects[4]=previewRect;showUIRects(rects,5);
+}
+static void changeLayout(){
+ layoutMode=(layoutMode+1)%3;drawLayout(ui());showUIRects(&layoutRect,1);
 }
 static void gameUI(){
  lcd.fillScreen(0);lcd.flush(true);GameVideo::reset();overlay=false;overlayArmed=false;launchRelease=true;overlayMs=0;
@@ -210,7 +261,7 @@ static bool load(const String &p){
  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=nextPresent=0;imageHash=imageChanges=imageSamples=0;diagKeys=0;
  queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);
  playing=true;gameUI();maxWork=0;markPhase(1);
- Serial.printf("RUN BUILD 030 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
+ Serial.printf("RUN BUILD 031 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
  frameDeadline=micros();return true;
 }
 void setup(){
@@ -227,10 +278,10 @@ void setup(){
   for(uint8_t a:{0x5D,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){addr=a;break;}}
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
-  Serial.println("BOOT 030 private ROM init");private_rom_init();
-  Serial.printf("BOOT 030 private ROM count=%u\n",private_rom_count());
-  Serial.println("BOOT 030 splash begin");RetroUI::splash(ui());showUI();
-  Serial.println("BOOT 030 splash ready / waiting touch");
+  Serial.println("BOOT 031 private ROM init");private_rom_init();
+  Serial.printf("BOOT 031 private ROM count=%u\n",private_rom_count());
+  Serial.println("BOOT 031 splash begin");RetroUI::splash(ui());showUI();
+  Serial.println("BOOT 031 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
 }
 void loop(){
@@ -240,7 +291,7 @@ void loop(){
   pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
-    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 030 home begin");homeUI();Serial.println("BOOT 030 home ok");}
+    else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 031 home begin");homeUI();Serial.println("BOOT 031 home ok");}
     delay(12);return;
   }
   if(!playing){
@@ -250,21 +301,23 @@ void loop(){
       if(home){if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=90&&p.y<410){int s=(p.y-90)/164;if(s<2&&(p.y-90)%164<148){nesMode=s==1;scan();menu();}}}
       else if(abs(dy)>55&&abs(dy)>abs(dx)){
         size_t old=page;if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;
-        if(old!=page)menu();
+        if(old!=page)changePage();
       }else if(abs(dy)<36&&abs(dx)<36){
         if(hit(p,12,10,90,44))homeUI();
-        else if(hit(p,12,420,68,48)){if(page){page--;menu();}}
-        else if(hit(p,86,420,68,48)){if((page+1)*4<paths.size()){page++;menu();}}
-        else if(hit(p,162,420,112,48)){layoutMode=(layoutMode+1)%3;menu();}
+        else if(hit(p,12,420,68,48)){if(page){page--;changePage();}}
+        else if(hit(p,86,420,68,48)){if((page+1)*4<paths.size()){page++;changePage();}}
+        else if(hit(p,162,420,112,48)){changeLayout();}
         else if(hit(p,282,420,186,48)&&selected<paths.size()){
           auto& d=ui();const auto&t=RetroUI::themes[systemId()];RetroUI::bg(d,systemId());RetroUI::center(d,240,210,"CARGANDO...",3,t.ink);showUI();menuCanvas.release();
           if(!load(paths[selected]))menu();
         }else if(p.x>=12&&p.x<204&&p.y>=76&&p.y<380&&(p.y-76)%76<66){
-          size_t i=page*4+(p.y-76)/76;if(i<paths.size()&&i!=selected){selected=i;menu();}
+          size_t i=page*4+(p.y-76)/76;changeCart(i);
         }
       }
     }
-    wasDown=npoints>0;delay(12);return;
+    wasDown=npoints>0;
+    if(!npoints&&millis()-uiLastWrite>=5000&&millis()-uiLastIdle>=5000){uiLastIdle=millis();Serial.printf("UI IDLE writes=%u no_draw_ms=%u screen=%s\n",uiWrites,(unsigned)(millis()-uiLastWrite),home?"HOME":"LIBRARY");}
+    delay(12);return;
   }
   uint8_t keys=0;
   bool exit=false;

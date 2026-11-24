@@ -15,12 +15,7 @@ static void button(Arduino_GFX& d,int x,int y,int w,int h,const String& s,const 
  center(d,x+w/2,y+(h-16)/2,s,2,primary?t.bg:t.ink);
 }
 static void bg(Arduino_GFX& d,int sys){
- const uint16_t c=sys<0?rgb(13,12,28):themes[sys].bg;
- d.fillScreen(c);
- const uint16_t line=sys<0?rgb(38,29,59):sys==0?rgb(34,51,37):rgb(55,39,45);
- // Wide low-contrast geometric bands; no animated or one-pixel scanline patterns.
- for(int y=0;y<480;y+=40)d.fillRect(0,y,480,4,line);
- if(sys<0){for(int i=0;i<5;i++){int y=385+i*15;d.fillRect(0,y,480,3+i,line);}}
+ d.fillScreen(sys<0?rgb(13,15,25):themes[sys].bg);
 }
 static void console(Arduino_GFX& d,int x,int y,int s,int sys){
  auto box=[&](int a,int b,int w,int h,uint16_t c){d.fillRect(x+a*s,y+b*s,w*s,h*s,c);};
@@ -45,14 +40,25 @@ static void cart(Arduino_GFX& d,int x,int y,int w,int h,int sys,unsigned seed){
  for(int i=0;i<5;i++)d.drawFastHLine(x+w/5,y+h-5-i*2,w*3/5,t.bg);
 }
 static unsigned seed(const String& s){unsigned v=2166136261u;for(unsigned i=0;i<s.length();i++)v=(v^(uint8_t)s[i])*16777619u;return v;}
+// Chunky 4-pixel lines on a solid dark background, no scanline texture.
+static void pixelLine(Arduino_GFX& d,int x0,int y0,int x1,int y1,uint16_t color,int weight=1){
+ int dx=abs(x1-x0),sx=x0<x1?1:-1,dy=-abs(y1-y0),sy=y0<y1?1:-1,err=dx+dy;
+ for(;;){d.fillRect(x0*4,y0*4,4*weight,4*weight,color);if(x0==x1&&y0==y1)break;int e2=2*err;if(e2>=dy){err+=dy;x0+=sx;}if(e2<=dx){err+=dx;y0+=sy;}}
+}
 static void splash(Arduino_GFX& d){
- bg(d,-1);uint16_t white=0xffff;
- d.drawTriangle(240,84,180,193,300,193,white);d.drawTriangle(240,87,183,191,297,191,white);d.drawFastHLine(95,151,125,white);
- const uint16_t colors[]={0xf9a8,0xfd40,0xff60,0x67e8,0x4dff,0xb39f};for(int i=0;i<6;i++){d.drawLine(259,151,384,114+i*15,colors[i]);d.drawLine(259,152,384,115+i*15,colors[i]);}
- center(d,240,250,"PRISMA",6,white);center(d,240,309,"R E T R O",3,0xb59e);center(d,240,365,"8-BIT ENTERTAINMENT",2,0x94b2);center(d,240,407,"TOCA PARA INICIAR",2,0xffff);center(d,240,455,"ESP32-S3 / BUILD 030",1,0x94b2);
+ bg(d,-1);const uint16_t white=rgb(235,241,252);
+ const uint16_t colors[]={rgb(255,83,120),rgb(255,155,70),rgb(255,216,94),rgb(91,221,156),rgb(74,165,255),rgb(166,103,235)};
+ pixelLine(d,21,34,54,34,white);
+ for(int i=0;i<6;i++)pixelLine(d,65,34,97,20+i*5,colors[i]);
+ pixelLine(d,60,19,44,47,white);pixelLine(d,44,47,76,47,white);pixelLine(d,76,47,60,19,white);
+ center(d,240,246,"PRISMA",6,white);center(d,240,307,"R E T R O",3,rgb(166,103,235));
+ for(int i=0;i<6;i++)d.fillRect(168+i*24,350,20,8,colors[i]);
+ center(d,240,380,"8-BIT ENTERTAINMENT",2,rgb(152,165,191));
+ center(d,240,418,"TOCA PARA INICIAR",2,white);
+ center(d,240,458,"ESP32-S3 / BUILD 031",1,rgb(100,115,144));
 }
 static void home(Arduino_GFX& d,const unsigned counts[2]){
- bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);text(d,415,19,"030",2,0x9cfa);text(d,20,47,"SELECT SYSTEM",2,0x94b2);
+ bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);text(d,415,19,"031",2,0x9cfa);text(d,20,47,"SELECT SYSTEM",2,0x94b2);
  for(int i=0;i<2;i++){const auto&t=themes[i];int y=90+i*164;d.fillRoundRect(16,y,448,148,10,t.card);d.drawRoundRect(16,y,448,148,10,t.edge);console(d,32,y+35,2,i);text(d,126,y+32,t.name,i==1?2:3,t.ink);text(d,126,y+60,t.sub,1,t.muted);text(d,126,y+85,String(t.bits)+" / "+counts[i]+" JUEGOS",2,t.ink);text(d,432,y+62,">",3,t.muted);}
  center(d,240,459,"ELEGIR CONSOLA",1,0x94b2);
 }
