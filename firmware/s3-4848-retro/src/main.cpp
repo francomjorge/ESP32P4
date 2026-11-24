@@ -7,6 +7,7 @@
 #include <vector>
 #include "gb_core.h"
 #include "builtin_roms.h"
+#include "nes_core.h"
 
 static Arduino_SWSPI panelBus(GFX_NOT_DEFINED,39,48,47,GFX_NOT_DEFINED);
 static Arduino_ESP32RGBPanel rgb(18,17,16,21,
@@ -19,6 +20,7 @@ static const uint16_t BG=0x0842,FG=0xFFFF,ACC=0x5E9E,CARD=0x2124;
 static uint8_t addr=0, *rom=nullptr,*ram=nullptr;
 static uint16_t *frame=nullptr;
 static std::vector<String> paths;
+static bool nesMode=false,home=true;
 static bool playing=false,sdOk=false,wasDown=false;
 static size_t page=0;
 static String status;
@@ -66,24 +68,35 @@ static bool hit(Point p,int x,int y,int w,int h){
 }
 static void scan(){
   paths.clear();page=0;
-  for(const auto &g:builtins)paths.push_back(String("@")+g.name);
+  for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
+  size_t builtinCount=paths.size();
   if(!sdOk){SD.end();sdOk=SD.begin(42,SPI,4000000);}
-  if(!sdOk){status="4 juegos internos / sin SD";return;}
-  File dir=SD.open("/roms/gb");
-  if(!dir||!dir.isDirectory()){status="4 juegos internos / sin carpeta SD";return;}
+  if(!sdOk){status=String(paths.size())+" internos / sin SD";return;}
+  File dir=SD.open(nesMode?"/roms/nes":"/roms/gb");
+  if(!dir||!dir.isDirectory()){status=String(paths.size())+" internos / sin carpeta SD";return;}
   for(File f=dir.openNextFile();f;f=dir.openNextFile()){
     if(!f.isDirectory()){
       String path=f.path();String lower=path;lower.toLowerCase();
-      if(lower.endsWith(".gb")&&paths.size()<128)paths.push_back(path);
+      if(lower.endsWith(nesMode?".nes":".gb")&&paths.size()<128)paths.push_back(path);
     }f.close();
   }
   dir.close();
-  std::sort(paths.begin()+sizeof(builtins)/sizeof(builtins[0]),paths.end(),[](const String&a,const String&b){return a.compareTo(b)<0;});
+  std::sort(paths.begin()+builtinCount,paths.end(),[](const String&a,const String&b){return a.compareTo(b)<0;});
   status=paths.empty()?"No hay ROM .gb":String(paths.size())+" juegos detectados";
 }
+static void homeUI(){
+  home=true;lcd.fillScreen(BG);textAt(20,20,"PRISMA RETRO",4,ACC);
+  textAt(20,65,"BUILD 002 / SELECT SYSTEM",2);
+  lcd.fillRoundRect(20,110,440,135,12,0x3265);lcd.drawRoundRect(20,110,440,135,12,0xAEDA);
+  textAt(40,140,"GAME BOY",4);textAt(40,194,"DMG / PEANUT-GB",2);
+  lcd.fillRoundRect(20,262,440,135,12,0x5925);lcd.drawRoundRect(20,262,440,135,12,0xF9C8);
+  textAt(40,292,"NINTENDO NES",3);textAt(40,346,"FAMICOM / NOFRENDO",2);
+  textAt(20,434,"DIO40 / 16MB / SD + FLASH",2,ACC);
+}
 static void menu(){
+  home=false;
   lcd.fillScreen(BG);textAt(18,16,"PRISMA RETRO",3,ACC);
-  textAt(18,52,"S3 / GAME BOY / BUILD 001",2);
+  textAt(18,52,nesMode?"NES / BUILD 002":"GAME BOY / BUILD 002",2);button(360,12,106,38,"HOME");
   textAt(18,81,status,2,ACC);
   for(size_t i=0;i<6&&page*6+i<paths.size();i++){
     int y=116+i*48;
@@ -101,7 +114,7 @@ static void gameUI(){
   button(190,426,102,42,"SELECT");button(300,426,100,42,"START");
   button(335,355,62,60,"B");button(407,320,64,60,"A");
 }
-static void releaseGame(){free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
+static void releaseGame(){if(nesMode)nes_core_stop();free(rom);free(ram);free(frame);rom=nullptr;ram=nullptr;frame=nullptr;playing=false;}
 static bool load(const String &p){
   File f;
   const BuiltinROM *internal=nullptr;
@@ -112,18 +125,18 @@ static bool load(const String &p){
     bytes=internal->size;
   }else{
     f=SD.open(p,FILE_READ);
-    if(!f||f.size()<32768||f.size()>4*1024*1024){status="ROM invalida (32KB-4MB)";return false;}
+    if(!f||f.size()<(nesMode?16400:32768)||f.size()>4*1024*1024){status="ROM invalida (32KB-4MB)";return false;}
     bytes=f.size();
   }
-  rom=(uint8_t*)ps_malloc(bytes);ram=(uint8_t*)ps_malloc(128*1024);
+  rom=(uint8_t*)ps_malloc(bytes);ram=nesMode?nullptr:(uint8_t*)ps_malloc(128*1024);
   frame=(uint16_t*)ps_malloc(320*288*sizeof(uint16_t));
-  if(!rom||!ram||!frame){releaseGame();status="Sin PSRAM suficiente";return false;}
+  if(!rom||(!nesMode&&!ram)||!frame){releaseGame();status="Sin PSRAM suficiente";return false;}
   size_t got=bytes;
   if(internal)memcpy(rom,internal->data,bytes);
   else {got=f.read(rom,bytes);f.close();}
-  if(got!=bytes||rom[0x143]==0xC0){releaseGame();status="ROM no compatible (solo DMG)";return false;}
-  memset(ram,0xFF,128*1024);memset(frame,0,320*288*sizeof(uint16_t));
-  int err=core_start(rom,bytes,ram,128*1024,frame);
+  if(got!=bytes||(!nesMode&&rom[0x143]==0xC0)){releaseGame();status="ROM no compatible (solo DMG)";return false;}
+  if(ram)memset(ram,0xFF,128*1024);memset(frame,0,320*288*sizeof(uint16_t));
+  int err=nesMode?nes_core_start(rom,bytes,frame):core_start(rom,bytes,ram,128*1024,frame);
   if(err){releaseGame();status="Error core: "+String(err);return false;}
   playing=true;gameUI();return true;
 }
@@ -139,7 +152,7 @@ void setup(){
   Serial.printf("GT911=0x%02x\n",addr);
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   SPI.begin(48,41,47,42);
-  scan();menu();
+  homeUI();
 }
 void loop(){
   if(!addr){delay(100);return;}
@@ -147,7 +160,10 @@ void loop(){
   if(!playing){
     if(npoints&&!wasDown){
       Point p=points[0];
-      if(hit(p,14,420,110,45)){if(page)page--;menu();}
+      if(home){
+        if(hit(p,20,110,440,135)||hit(p,20,262,440,135)){nesMode=p.y>=262;scan();menu();}
+      }else if(hit(p,360,12,106,38)){homeUI();}
+      else if(hit(p,14,420,110,45)){if(page)page--;menu();}
       else if(hit(p,145,420,170,45)){scan();menu();}
       else if(hit(p,345,420,121,45)){if((page+1)*6<paths.size())page++;menu();}
       else if(p.y>=116&&p.y<404){
@@ -170,7 +186,7 @@ void loop(){
     if(hit(p,64,310,56,48))keys|=64;
     if(hit(p,64,420,56,48))keys|=128;
   }
-  uint32_t start=micros();core_frame(keys);
+  uint32_t start=micros();if(nesMode)nes_core_frame(keys);else core_frame(keys);
   static unsigned count=0;
   if((count++&1)==0)lcd.draw16bitRGBBitmap(80,10,frame,320,288);
   uint32_t elapsed=micros()-start;

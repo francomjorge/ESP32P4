@@ -1,4 +1,4 @@
-name: S3 Retro - build 001
+name: S3 Retro - build 002
 on:
   push:
     paths:
@@ -25,6 +25,7 @@ jobs:
           /tmp/prisma-esp-venv/bin/python -I -m esptool version
       - run: curl -fL --retry 3 https://raw.githubusercontent.com/deltabeard/Peanut-GB/d0bcca771c83a2638c93a9ae61f3d51f226dc905/peanut_gb.h -o src/peanut_gb.h
       - run: python tools/prepare_roms.py
+      - run: bash tools/prepare_nes.sh
       - name: Install platform and fix esptool executable resolution
         run: |
           pio pkg install
@@ -49,11 +50,11 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-001-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-001-app.bin
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-002-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-002-app.bin
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-001
+          name: PRISMA-RETRO-S3-002
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
