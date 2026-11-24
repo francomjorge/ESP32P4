@@ -49,3 +49,6 @@ Preserves stable-s3-004b (user confirmed working). 240 MHz CPU build setting, fr
 
 ## Build 006 — fullscreen performance
 Confirmed stable 005 preserved in stable-s3-005. Default fullscreen 480x480 nearest-neighbor; FIT toggles square-pixel proportions. Touch controls and EXIT blended over live image. Native RGB565 buffers (NES 256x240, GB 160x144) scaled directly into existing Arduino RGB framebuffer using lookup tables and row reuse, with one explicit flush per presented frame. No extra fullscreen framebuffer. Mapper, DIO40, private partition layout and FPS diagnostics unchanged. Actual display FPS and tearing must be checked on device.
+
+## Build 007 — regression recovery
+User reported 006 alpha corruption and game stalls. Restore confirmed 005 emulator buffers, cores, pacing and classic SAFE rendering. FULL uses 16-row internal SRAM staging via Arduino_GFX draw16bitRGBBitmap; no direct scanout pointer or alpha blend, outline controls on game. Default full presentation at 30 FPS max, dynamically down to 20/15 if emulation falls behind. SAFE toggle restores 005-sized output without restarting. Serial logs separate draw cost and FPS. DIO40 and ROM partition unchanged. No claim of physical fix before testing.
