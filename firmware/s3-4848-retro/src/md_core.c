@@ -7,8 +7,6 @@
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #pragma GCC optimize ("O2")
-static uint16_t rgbrow[320];
-static uint8_t indexrow[320];
 static unsigned profileFrames,profileDraws;
 static uint64_t profileCPU,profileVDP,profileScale;
 #include "gwenesis.h"
@@ -21,7 +19,7 @@ int system_clock,scan_line;
 int16_t gwenesis_sn76489_buffer[1100],gwenesis_ym2612_buffer[1100];
 int sn76489_index,sn76489_clock,ym2612_index,ym2612_clock;
 static uint8_t *video;
-static uint16_t *out;
+static int videoWidth=320,videoHeight=224;
 static bool active;
 static unsigned period=16667;
 void gwenesis_io_get_buttons(void){}
@@ -40,7 +38,7 @@ int md_start(uint8_t *rom,size_t bytes,uint16_t *frame){
   if(!VRAM||!video){md_stop();return -21;}
   load_cartridge(rom,bytes);
   power_on();reset_emulation();
-  out=frame;active=true;period=16667;
+  (void)frame;active=true;period=16667;
   profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=0;
   printf("MD buffers VRAM=%p video=%p free_internal=%u\n",VRAM,video,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   return 0;
@@ -53,7 +51,7 @@ void md_frame(uint8_t k,bool present){
   int lines=REG1_PAL?LINES_PER_FRAME_PAL:LINES_PER_FRAME_NTSC;
   period=REG1_PAL?20000:16667;
   screen_width=REG12_MODE_H40?320:256;screen_height=REG1_PAL?240:224;
-  int width=screen_width,height=screen_height;
+  if(present){videoWidth=screen_width;videoHeight=screen_height;}
   int hint_counter=gwenesis_vdp_regs[10];
   if(present)memset(video,0,320*241+320);
   gwenesis_vdp_set_buffer((unsigned short*)(video+160));
@@ -91,24 +89,11 @@ void md_frame(uint8_t k,bool present){
   m68k.cycles-=system_clock;
   uint64_t core_us=esp_timer_get_time()-begin;
   if(measure){profileCPU+=core_us-vdp_us;profileVDP+=vdp_us;if(present)profileDraws++;}
-  uint64_t scaleStart=esp_timer_get_time();
-  if(present){int prev=-1;
-  for(unsigned y=0;y<288;y++){
-    int sy=y*height/288;
-    if(sy!=prev){
-      memcpy(indexrow,video+160+sy*320,width);
-      if(width==320){for(unsigned x=0;x<320;x++)rgbrow[x]=CRAM565[indexrow[x]];}
-      else for(unsigned x=0,a=0;x<320;x+=5,a+=4){
-        uint16_t c=CRAM565[indexrow[a]];
-        rgbrow[x]=rgbrow[x+1]=c;rgbrow[x+2]=CRAM565[indexrow[a+1]];rgbrow[x+3]=CRAM565[indexrow[a+2]];rgbrow[x+4]=CRAM565[indexrow[a+3]];
-      }
-      prev=sy;
-    }
-    memcpy(out+y*320,rgbrow,sizeof(rgbrow));
-  }
-  if(measure)profileScale+=esp_timer_get_time()-scaleStart;
-  }
   if(++profileFrames>=126){printf("GEN_PROF cpu=%u us vdp=%u us scale=%u us samples=%u drawn=%u\n",(unsigned)(profileCPU/18),(unsigned)(profileDraws?profileVDP/profileDraws:0),(unsigned)(profileDraws?profileScale/profileDraws:0),18,profileDraws);profileFrames=profileDraws=0;profileCPU=profileVDP=profileScale=0;}
 }
+uint8_t *md_video(int *w,int *h,int *pitch,uint16_t **palette){
+  *w=videoWidth;*h=videoHeight;*pitch=320;*palette=CRAM565;
+  return active?video+160:NULL;
+}
 unsigned md_period(void){return period;}
-void md_stop(void){active=false;free(VRAM);free(video);VRAM=video=NULL;ROM_DATA=NULL;out=NULL;}
+void md_stop(void){active=false;free(VRAM);free(video);VRAM=video=NULL;ROM_DATA=NULL;}

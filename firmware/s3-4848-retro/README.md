@@ -58,3 +58,6 @@ Uses confirmed 005 graphics path, no 006/007 fullscreen changes. Gwenesis from R
 
 ## Build 009 — Sega performance
 Preserves 008D on experimental-s3-008d and 005 stable. Optimize Gwenesis only at O2, prefer internal SRAM for indexed video, convert each unique source row once, adaptive Mega Drive frameskip 1–3, instrument CPU/VDP/scaler/LCD costs and correct MD diagnostic label. Same display path, Z80, ROMs and DIO40. Target normal game speed before arcade work; no physical FPS claims.
+
+## Build 010 — native indexed display and fixed timeline
+Golden Axe on 009 measured 42–44 emu fps / 10–11 displayed fps, CPU ~9 ms, VDP ~9 ms, scaling ~9 ms, LCD ~10 ms. Remove RGB565 intermediate and scaler for MD/NES; use Arduino_GFX indexed bitmap API (native 320x224/256x224 MD or 256x240 NES), retain GB 2x with callback skipped on unpresented frames. Fixed frame deadline allows cheap frames to catch up with expensive ones, bounded debt, adaptive frameskip on all consoles. No direct framebuffer writes, no transparency, no panel timing changes. Actual FPS not yet measured.
