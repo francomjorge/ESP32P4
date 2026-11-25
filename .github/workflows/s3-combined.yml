@@ -374,8 +374,9 @@ jobs:
           src,n=re.subn(r"prismaBytes=0;\s+for\(unsigned i=0;i<4;i\+\+\)", "prismaBytes=0;\n            memcpy(prismaRenderDirty,prismaDirty,sizeof(prismaRenderDirty));\n            prismaForceNext=false;\n            for(unsigned i=0;i<4;i++)",src)
           assert n==1,n
           old="unsigned addr=start+(y&1)*8192+(y>>1)*80;"
-          assert src.count(old)==1
-          src=src.replace(old,old+"\n                if(!prismaFullRender&&!prismaCgaDirty(addr))continue;")
+          start=src.index("void Video::prismaRenderSnapshot()")
+          assert src[start:].count(old)==1,("snapshot CGA address",src[start:].count(old))
+          src=src[:start]+src[start:].replace(old,old+"\n                if(!prismaFullRender&&!prismaCgaDirty(addr))continue;",1)
           old="prismaSnapshotUpdate(0,0,s.w-1,s.h-1);"
           assert src.count(old)==1
           src=src.replace(old,"""if(!prismaFullRender&&(s.gfx[6]&1)&&s.shift==0&&(s.attr[0x12]&15)!=1&&s.w%8==0){
@@ -427,8 +428,8 @@ jobs:
           i=src.index("for(unsigned y=0;y<200;y++){",start)
           src=src[:i]+"unsigned prismaCgaRows=0;\n              "+src[i:]
           old="vm.renderer.draw(vga_framebuffer,width,200,VGA_FRAMEBUFFER_STRIDE);"
-          assert src.count(old)==2
           start=src.index("void Video::prismaRenderSnapshot()")
+          assert src[start:].count(old)==1,("snapshot CGA draw",src[start:].count(old))
           i=src.index(old,start)
           src=src[:i]+"__atomic_fetch_add(&prismaRows,prismaCgaRows,__ATOMIC_RELAXED);\n              __atomic_fetch_add(&prismaRowsPossible,200,__ATOMIC_RELAXED);\n              "+src[i:]
           old="vm.renderer.draw(vga_framebuffer,s.w,s.h,VGA_FRAMEBUFFER_STRIDE);"
