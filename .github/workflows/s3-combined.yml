@@ -675,7 +675,7 @@ jobs:
               body="memcpy(vm.memory.RAM+dst,vm.memory.RAM+srcaddr,bytes);" if mov else ("memset(vm.memory.RAM+dst,regs.byteregs[regal],bytes);" if sz==1 else "uint8_t *out=vm.memory.RAM+dst;const uint16_t v=regs.wordregs[regax];for(unsigned k=0;k<bytes;k+=2){out[k]=uint8_t(v);out[k+1]=uint8_t(v>>8);}")
               snippet=snippet.replace("BODY",body).replace("SIUPDATE","regs.wordregs[regsi]=si+bytes;" if mov else "")
               src=src[:i]+snippet+src[i:]
-          p.write_text(src)
+          p.write_text('#include <string.h>\n'+src)
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
