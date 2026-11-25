@@ -58,6 +58,36 @@ static PrismaHost host;
 static Faux86::Config cfg(&host);
 static Faux86::VM *vm=nullptr;
 static uint32_t last=0,steps=0;
+static uint8_t touchAddr=0,held=0;
+static bool touchRead(uint16_t reg,uint8_t *buf,uint8_t n){
+ Wire1.beginTransmission(touchAddr);Wire1.write(reg>>8);Wire1.write(reg&255);
+ if(Wire1.endTransmission(false)||Wire1.requestFrom(touchAddr,n)!=n)return false;
+ for(int i=0;i<n;i++)buf[i]=Wire1.read();return true;
+}
+static void touchInput(){
+ if(!touchAddr)return;
+ uint8_t st=0;if(!touchRead(0x814e,&st,1)||!(st&0x80))return;
+ uint8_t b[8],key=0;
+ if((st&15)&&touchRead(0x814f,b,8)){
+  int x=b[1]|(b[2]<<8),y=b[3]|(b[4]<<8);
+  if(y<80)key=0x1c;
+  else if(y>400)key=x<120?0x01:x<240?0x39:x<360?0x1d:0x2a;
+  else if(x<100)key=0x4b;else if(x>380)key=0x4d;
+  else if(y<240)key=0x48;else key=0x50;
+ }
+ Wire1.beginTransmission(touchAddr);Wire1.write(0x81);Wire1.write(0x4e);Wire1.write(0);Wire1.endTransmission();
+ if(key!=held){if(held)vm->input.handleKeyUp(held);if(key)vm->input.handleKeyDown(key);held=key;vm->input.tick();}
+}
+static void serialInput(){
+ // ASCII terminal commands, including game launcher batch names.
+ static const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm"};
+ static const uint8_t starts[]={2,16,30,44};
+ if(!Serial.available())return;
+ char c=Serial.read();if(c=='\n')return;
+ uint8_t k=c=='\r'?0x1c:c==' '?0x39:c==27?1:c==8?14:0;
+ for(int i=0;i<4&&!k;i++){const char *p=strchr(rows[i],tolower((unsigned char)c));if(p&&*p)k=starts[i]+(p-rows[i]);}
+ if(k){vm->input.handleKeyDown(k);vm->input.tick();vm->input.handleKeyUp(k);vm->input.tick();}
+}
 static void fail(const char *msg){Serial.println(msg);lcd.setCursor(8,8);lcd.setTextColor(0xffff);lcd.setTextSize(2);lcd.println(msg);lcd.flush(true);}
 void setup(){
   Serial.begin(115200); delay(200);
@@ -83,11 +113,11 @@ void setup(){
   if(!vga_framebuffer){fail("VGA allocation failed");return;}
   vm=new Faux86::VM(cfg);
   if(!vm->init()){vm=nullptr;fail("VM init failed");return;}
-  host.init(vm);last=millis();Serial.println("DOS VM READY");
+  host.init(vm);Wire1.begin(19,45,400000);Wire1.setTimeOut(10);for(uint8_t a:{0x5d,0x14}){Wire1.beginTransmission(a);if(!Wire1.endTransmission()){touchAddr=a;break;}}last=millis();Serial.println("DOS VM READY");
 }
 void loop(){
   if(!vm){delay(100);return;}
-  vm->simulate();++steps;
+  touchInput();serialInput();vm->simulate();++steps;
   if(millis()-last>=3000){
     uint32_t elapsed=millis()-last;
     Serial.printf("DOS PERF steps=%u display=%.1f fps blit=%u us heap=%u psram=%u\n",steps,host.video.frames*1000.0/elapsed,host.video.frames?host.video.work/host.video.frames:0,ESP.getFreeHeap(),ESP.getFreePsram());
