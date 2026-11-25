@@ -11,6 +11,7 @@
 bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher(); bool dos_in_launcher(); void dos_request_exit(); void dos_touch_game(unsigned,int,int);
 void dos_report_reset();
 bool dos_diag_bench();
+bool dos_prepare_restart();
 static bool dosActive=false;
 #endif
 #include "builtin_roms.h"
@@ -148,7 +149,9 @@ static void restartToNes(){
  diag_logf(false,"GAME EXIT RESET target=NES heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
  Serial.flush();ESP.restart();
 }
+static void dos_quiesce_for_restart();
 void dos_restart_to_selector(){
+ dos_quiesce_for_restart();
  dosReturnMagic=DOS_RETURN_MAGIC;dosReturnCheck=~DOS_RETURN_MAGIC;
  diag_logf(false,"GAME EXIT RESET target=DOS heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
  Serial.flush();ESP.restart();
@@ -165,10 +168,12 @@ static void restartToDos(bool toDos){dosReturnMagic=toDos?DOS_RETURN_MAGIC:0;dos
 static QueueHandle_t dosTouchQueue=nullptr;
 static DosTouchSample dosTouchCurrent{};
 static uint32_t dosTouchDrops=0;
+static bool dosTouchStop=false,dosTouchStopped=false;
 static void dosTouchWorker(void*){
   DosTouchSample previous{255,{0,0},false,0};
   uint32_t sentAt=0;
   for(;;){
+    if(__atomic_load_n(&dosTouchStop,__ATOMIC_ACQUIRE)){__atomic_store_n(&dosTouchStopped,true,__ATOMIC_RELEASE);vTaskDelete(nullptr);return;}
     pollTouch();
     DosTouchSample sample{npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240,millis()};
     if(sample.n!=previous.n||sample.p.x!=previous.p.x||sample.p.y!=previous.p.y||sample.rightPair!=previous.rightPair||millis()-sentAt>=40){
@@ -179,9 +184,35 @@ static void dosTouchWorker(void*){
   }
 }
 static void startDosTouch(){
+  __atomic_store_n(&dosTouchStop,false,__ATOMIC_RELEASE);__atomic_store_n(&dosTouchStopped,false,__ATOMIC_RELEASE);
   dosTouchQueue=xQueueCreate(32,sizeof(DosTouchSample));
   if(dosTouchQueue&&xTaskCreatePinnedToCore(dosTouchWorker,"dosTouch",3072,nullptr,4,nullptr,0)!=pdPASS){vQueueDelete(dosTouchQueue);dosTouchQueue=nullptr;}
   Serial.printf("DOS TOUCH worker=%s\n",dosTouchQueue?"core0":"sync");
+}
+static void dos_quiesce_for_restart(){
+ bool touchIdle=true;
+ if(dosTouchQueue){
+   __atomic_store_n(&dosTouchStop,true,__ATOMIC_RELEASE);
+   uint32_t started=millis();
+   while(!__atomic_load_n(&dosTouchStopped,__ATOMIC_ACQUIRE)&&millis()-started<400)delay(5);
+   touchIdle=__atomic_load_n(&dosTouchStopped,__ATOMIC_ACQUIRE);
+ }
+ bool videoIdle=dos_prepare_restart();
+ diag_logf(false,"DOS RESTART touch_idle=%d video_idle=%d\n",(int)touchIdle,(int)videoIdle);
+ if(touchIdle&&videoIdle){
+   digitalWrite(38,LOW);
+#ifdef PRISMA_RGB_SHUTDOWN
+   esp_err_t rc=rgb.prismaStopForReset();
+   diag_logf(false,"DOS RESTART rgb_stop=%d\n",(int)rc);
+#else
+   diag_logf(false,"DOS RESTART rgb_stop unavailable\n");
+#endif
+   delay(80);
+ }else diag_logf(false,"DOS RESTART shutdown timeout; forced software reset\n");
+}
+void dos_restart_home(){
+ dos_quiesce_for_restart();dosReturnMagic=dosReturnCheck=0;
+ diag_logf(false,"GAME EXIT RESET target=HOME\n");Serial.flush();ESP.restart();
 }
 #endif
 static void textAt(int x,int y,const String &s,uint8_t size=2,uint16_t color=FG){
