@@ -1,0 +1,70 @@
+name: S3 Retro - build 032A DOS
+on:
+  push:
+    branches: [build-032-dos-nes]
+    paths:
+      - 'firmware/s3-4848-retro/**'
+      - '.github/workflows/s3-dos.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/s3-4848-retro
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install platformio==6.1.18
+      - run: |
+          python -m venv /tmp/prisma-esp-venv
+          /tmp/prisma-esp-venv/bin/pip install esptool==5.0.1 click==8.1.8
+          /tmp/prisma-esp-venv/bin/python -I -m esptool version
+      - name: Install platform and fix esptool executable resolution
+        run: |
+          pio pkg install -e esp32-4848s040-dos
+          /tmp/prisma-esp-venv/bin/python -I -m esptool version
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          import os
+          wrapper = Path("/tmp/prisma-esptool")
+          wrapper.write_text('#!/bin/sh\nexec /tmp/prisma-esp-venv/bin/python -I -m esptool "$@"\n')
+          wrapper.chmod(0o755)
+          for p in (Path.home()/".platformio/platforms").glob("espressif32*/builder/main.py"):
+              s = p.read_text()
+              old = "esptool_binary_path = install_esptool()"
+              if old not in s:
+                  raise SystemExit("Unexpected platform builder: " + str(p))
+              p.write_text(s.replace(old, 'esptool_binary_path = "/tmp/prisma-esptool"'))
+          PY
+      - name: Fix Arduino_GFX rotation 0 pixel writes
+        run: python tools/patch_gfx.py
+      - run: pio run -e esp32-4848s040-dos
+      - name: Merge factory image
+        run: |
+          set -eux
+          B=.pio/build/esp32-4848s040-dos
+          mkdir -p dist
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-032A-DOS-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-032A-DOS-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-032A-DOS.elf
+          if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("dist/PRISMA-RETRO-S3-032A-DOS-merged.bin").read_bytes()
+          assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
+          assert p[0x8000:0x8002]==b"\xaa\x50"
+          assert p[0x10000]==0xe9
+          print("RAW ESP32-S3 image verified:",len(p),"bytes")
+          PY
+          (cd dist && sha256sum *.bin > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PRISMA-RETRO-S3-032A-DOS
+          path: firmware/s3-4848-retro/dist/
+          if-no-files-found: error
