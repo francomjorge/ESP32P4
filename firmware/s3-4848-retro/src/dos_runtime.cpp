@@ -9,7 +9,7 @@ static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
 static bool launcher=false;
 static bool bootPhase=true;
-static bool mouseMode=true;
+static bool mouseMode=true,consoleMode=false;
 static uint32_t serialKeys=0,touchClicks=0;
 static const char *gameNames[]={"Carmen Sandiego","The Incredible Machine","Indiana Jones - Last Crusade","Indiana Jones - Temple of Doom"};
 static const char *gameCmds[]={"carmen","tim","indy3","indy2"};
@@ -131,7 +131,7 @@ static bool injectCommand(const char *cmd){
  m.writeWord(0x41c,tail);return true;
 }
 static void openLauncher(){
- bootPhase=false;
+ bootPhase=false;consoleMode=false;
  dos_key(0);dos_mouse(0,0,false);
  launcher=true;host.timer.pause();
  dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
@@ -142,15 +142,17 @@ static void openLauncher(){
   dosLcd->drawRoundRect(12,y,456,74,8,0x5e9e);
   dosLcd->setTextSize(2);dosLcd->setCursor(24,y+28);dosLcd->print(gameNames[i]);
  }
+ dosLcd->fillRoundRect(12,432,456,36,6,0x2124);dosLcd->setTextSize(2);dosLcd->setCursor(24,442);dosLcd->print("Consola USB");
  dosLcd->flush(true);Serial.println("DOS TOUCH LAUNCHER");
 }
 bool dos_launcher_touch(unsigned n,int x,int y){
  static bool down=false;static int choice=-1;
  if(!launcher){down=false;choice=-1;return false;}
- if(n==1&&!down){down=true;choice=(x>=12&&x<468&&y>=78&&y<430&&(y-78)%88<74)?(y-78)/88:-1;}
+ if(n==1&&!down){down=true;choice=(x>=12&&x<468&&y>=432&&y<468)?4:(x>=12&&x<468&&y>=78&&y<430&&(y-78)%88<74)?(y-78)/88:-1;}
  if(n>1){down=true;choice=-1;}
  if(!n&&down){
   down=false;
+  if(choice==4){consoleMode=true;host.timer.resume();vm->video.updatedscreen=true;launcher=false;host.video.invalidate();Serial.println("DOS USB CONSOLE");}
   if(choice>=0&&choice<4){
    const char *cmd=gameCmds[choice];Serial.printf("DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
@@ -274,7 +276,7 @@ void dos_tick(){
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
    if(launchPending){if(!prompt)promptGone=true;if(promptGone||millis()-launchTime>15000)launchPending=false;}
-   if(prompt&&!launchPending&&!launcher&&millis()-launchTime>1000)openLauncher();
+   if(prompt&&!launchPending&&!launcher&&!consoleMode&&millis()-launchTime>1000)openLauncher();
   }
   if(millis()-last>=3000){
     uint32_t elapsed=millis()-last;
