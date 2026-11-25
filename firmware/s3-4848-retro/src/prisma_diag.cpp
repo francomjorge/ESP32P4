@@ -29,7 +29,7 @@ static void exportLog(bool perf){
  Serial.printf("PRISMA LOG BEGIN entries=%u filter=%s\n",history.count,perf?"PERF":"ALL");
  for(unsigned i=0;i<history.count;i++){
    const Entry &e=history.entries[(history.next+N-history.count+i)%N];
-   if(perf&&!strstr(e.text,"PERF")&&!strstr(e.text,"SLICE")&&!strstr(e.text,"SCALE")&&!strstr(e.text,"BENCH")&&!strstr(e.text,"LOAD"))continue;
+   if(perf&&!strstr(e.text,"PERF")&&!strstr(e.text,"SLICE")&&!strstr(e.text,"SCALE")&&!strstr(e.text,"BENCH")&&!strstr(e.text,"LOAD")&&!strstr(e.text,"DOS GFX"))continue;
    Serial.printf("%lu %lu %.*s\n",(unsigned long)e.seq,(unsigned long)e.ms,int(L-1),e.text);
    vTaskDelay(1);
  }
@@ -56,7 +56,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 058M reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 059 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);

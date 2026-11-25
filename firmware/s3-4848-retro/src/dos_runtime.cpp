@@ -66,12 +66,16 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   uint32_t viewport=0;
   SemaphoreHandle_t idle=nullptr;
   TaskHandle_t task=nullptr;
+  uint32_t profileBlitUs=0;
   static void worker(void *arg){
     auto *self=static_cast<PrismaVideo*>(arg);
     for(;;){
       ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-      traceWorker(1);uint32_t t=micros();renderSnapshot();traceWorker(0);
+      traceWorker(1);self->profileBlitUs=0;uint32_t t=micros();renderSnapshot();traceWorker(0);
       uint32_t us=micros()-t;
+      __atomic_fetch_add(&self->profileWorkerUs,us,__ATOMIC_RELAXED);
+      __atomic_fetch_add(&self->profileRasterUs,us>=self->profileBlitUs?us-self->profileBlitUs:0,__ATOMIC_RELAXED);
+      __atomic_fetch_add(&self->profileJobs,1,__ATOMIC_RELAXED);
       uint32_t old=__atomic_load_n(&self->renderMax,__ATOMIC_RELAXED);
       while(us>old&&!__atomic_compare_exchange_n(&self->renderMax,&old,us,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){}
       xSemaphoreGive(self->idle);
@@ -80,14 +84,24 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   void present(){
     traceWorker(3);uint32_t t=micros();
     if(jobClear)dosLcd->fillRect(0,0,480,jobTop,0);
+    const uint32_t copyStart=micros();
     dosLcd->draw16bitRGBBitmap((480-jobW)/2,(jobTop-jobH)/2+dirtyFirst,cache+dirtyFirst*jobW,jobW,dirtyLast-dirtyFirst+1);
+    const uint32_t flushStart=micros();
     dosLcd->flush(true);
+    const uint32_t done=micros();
+    __atomic_fetch_add(&profileClearUs,copyStart-t,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&profileCopyUs,flushStart-copyStart,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&profileFlushUs,done-flushStart,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&profilePixels,uint32_t(jobW)*uint32_t(dirtyLast-dirtyFirst+1),__ATOMIC_RELAXED);
+    __atomic_fetch_add(&profilePresentN,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);traceWorker(1);
   }
 public:
   uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
   uint32_t scaleUs=0,scaleCalls=0,scaleRows=0,scalePossible=0;
+  uint32_t profileWorkerUs=0,profileRasterUs=0,profileJobs=0;
+  uint32_t profileClearUs=0,profileCopyUs=0,profileFlushUs=0,profilePixels=0,profilePresentN=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -115,6 +129,7 @@ public:
   void blit(uint16_t *pixels,int w,int h,int stride) override {
     if(!pixels||w<=0||h<=0||w>VGA_FRAMEBUFFER_WIDTH||h>VGA_FRAMEBUFFER_HEIGHT||stride<w*2||!cache)return;
     if(__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);return;}
+    const uint32_t profileBlitStart=micros();
     int dw=min(w,480),dh=min(h,480);
     if((w==320||w==640)&&h==200){dw=480;dh=360;}
     const int top=panelTop();if(dh>top){dw=max(1,dw*top/dh);dh=top;}
@@ -156,7 +171,7 @@ public:
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
     if(changed)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
-    traceWorker(1);
+    traceWorker(1);profileBlitUs+=micros()-profileBlitStart;
   }
 };
 class PrismaTimer final : public Faux86::TimerInterface {
@@ -699,7 +714,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 058M DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -740,7 +755,7 @@ void dos_tick(){
     directFlightClick=directClick;directQueued=directClick=false;vm->cpu.prismaMousePending=true;directAt=millis();
   }
   servicePanel();
-  static uint32_t maxSlice=0,maxCapture=0;
+  static uint32_t maxSlice=0,maxCapture=0,captureTotalUs=0,captureN=0;
   if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
     if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
@@ -749,7 +764,8 @@ void dos_tick(){
       else if(!host.video.asyncReady()){vm->video.prismaDrawDue=false;vm->video.vga_drawCallback(0);}
       else if(host.video.acquire()){
         vm->video.prismaDrawDue=false;uint32_t rt=micros();
-        if(vm->video.prismaCapture()){captureBytes+=vm->video.prismaCaptureBytes();host.video.submit();}
+        const bool captured=vm->video.prismaCapture();captureTotalUs+=micros()-rt;++captureN;
+        if(captured){captureBytes+=vm->video.prismaCaptureBytes();host.video.submit();}
         else{vm->video.vga_drawCallback(0);host.video.release();}
         uint32_t us=micros()-rt;if(us>maxCapture)maxCapture=us;
       }else ++host.video.dropped;
@@ -803,6 +819,18 @@ void dos_tick(){
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
     uint32_t sr=__atomic_exchange_n(&host.video.scaleRows,0,__ATOMIC_RELAXED),sp=__atomic_exchange_n(&host.video.scalePossible,0,__ATOMIC_RELAXED);
     diag_logf(true, "DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
+    // Interval counters are sampled independently, as with DOS SCALE.
+    const uint32_t jobs=__atomic_exchange_n(&host.video.profileJobs,0,__ATOMIC_RELAXED);
+    const uint32_t workerUs=__atomic_exchange_n(&host.video.profileWorkerUs,0,__ATOMIC_RELAXED);
+    const uint32_t rasterUs=__atomic_exchange_n(&host.video.profileRasterUs,0,__ATOMIC_RELAXED);
+    const uint32_t presents=__atomic_exchange_n(&host.video.profilePresentN,0,__ATOMIC_RELAXED);
+    const uint32_t clearUs=__atomic_exchange_n(&host.video.profileClearUs,0,__ATOMIC_RELAXED);
+    const uint32_t copyUs=__atomic_exchange_n(&host.video.profileCopyUs,0,__ATOMIC_RELAXED);
+    const uint32_t flushUs=__atomic_exchange_n(&host.video.profileFlushUs,0,__ATOMIC_RELAXED);
+    const uint32_t pixels=__atomic_exchange_n(&host.video.profilePixels,0,__ATOMIC_RELAXED);
+    diag_logf(true,"DOS GFX jobs=%u capture_n=%u capture_avg=%u worker_avg=%u raster_est=%u\n",jobs,captureN,captureN?captureTotalUs/captureN:0,jobs?workerUs/jobs:0,jobs?rasterUs/jobs:0);
+    diag_logf(true,"DOS GFX LCD n=%u clear_avg=%u copy_avg=%u flush_avg=%u pixels_avg=%u\n",presents,presents?clearUs/presents:0,presents?copyUs/presents:0,presents?flushUs/presents:0,presents?pixels/presents:0);
+    captureTotalUs=captureN=0;
     Serial.printf("DOS DISK reads=%u hits=%u read_us=%u mmap_reads=%u mmap_bytes=%u\n",diskReads,diskHits,diskReadUs,diskMappedReads,diskMappedBytes);diskReads=diskHits=diskReadUs=diskMappedReads=diskMappedBytes=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
