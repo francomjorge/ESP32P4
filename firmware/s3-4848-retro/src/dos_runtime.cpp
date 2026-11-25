@@ -15,6 +15,9 @@ namespace DosArt {static const uint16_t *const small[5]={};static const uint16_t
 
 static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
+// Owned by the snapshot renderer; only valid during its synchronous blit.
+uint8_t prismaScaleDirtyRows[VGA_FRAMEBUFFER_HEIGHT]={};
+bool prismaScaleDirtyValid=false;
 static bool launcher=false;
 static uint32_t diskReads=0,diskHits=0,diskReadUs=0;
 static bool bootPhase=true,loadingGame=false;
@@ -67,7 +70,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   }
 public:
   uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
-  uint32_t scaleUs=0,scaleCalls=0;
+  uint32_t scaleUs=0,scaleCalls=0,scaleRows=0,scalePossible=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -92,7 +95,7 @@ public:
   void setPalette(Faux86::Palette*) override {}
   void blit(uint16_t *pixels,int w,int h,int stride) override {
     if(!pixels||w<=0||h<=0||w>VGA_FRAMEBUFFER_WIDTH||h>VGA_FRAMEBUFFER_HEIGHT||stride<w*2||!cache)return;
-    if(__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);return;}
+    if(__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);return;}
     int dw=min(w,480),dh=min(h,480);
     if((w==320||w==640)&&h==200){dw=480;dh=360;}
     const int top=panelTop();if(dh>top){dw=max(1,dw*top/dh);dh=top;}
@@ -101,7 +104,11 @@ public:
     const uint32_t scaleStart=micros();
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
     int prevY=-1;
+    unsigned processed=0;
+    const bool useHints=prismaScaleDirtyValid&&!force&&pixels==vga_framebuffer;
     for(int y=0;y<dh;y++){
+      if(useHints&&!prismaScaleDirtyRows[ymap[y]])continue;
+      ++processed;
       const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
       if(ymap[y]!=prevY){
         if(dw==w)memcpy(row,src,dw*2);
@@ -124,6 +131,8 @@ public:
     }
     __atomic_fetch_add(&scaleUs,micros()-scaleStart,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scaleCalls,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scaleRows,processed,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scalePossible,dh,__ATOMIC_RELAXED);
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
     if(changed)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
@@ -522,7 +531,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 046N DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 047 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -607,7 +616,8 @@ void dos_tick(){
     uint32_t rasterRows=0,rasterPossible=0;vm->video.prismaRasterStats(rasterRows,rasterPossible);
     Serial.printf("DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
-    Serial.printf("DOS SCALE avg_us=%u calls=%u\n",scaleN?scaleTime/scaleN:0,scaleN);
+    uint32_t sr=__atomic_exchange_n(&host.video.scaleRows,0,__ATOMIC_RELAXED),sp=__atomic_exchange_n(&host.video.scalePossible,0,__ATOMIC_RELAXED);
+    Serial.printf("DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
     Serial.printf("DOS DISK reads=%u hits=%u read_us=%u\n",diskReads,diskHits,diskReadUs);diskReads=diskHits=diskReadUs=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
