@@ -33,7 +33,7 @@ uint16_t *vga_framebuffer=nullptr;
 uint8_t prismaScaleDirtyRows[VGA_FRAMEBUFFER_HEIGHT]={};
 bool prismaScaleDirtyValid=false;
 static bool launcher=false;
-static uint32_t diskReads=0,diskHits=0,diskReadUs=0;
+static uint32_t diskReads=0,diskHits=0,diskReadUs=0,diskMappedReads=0,diskMappedBytes=0;
 static bool bootPhase=true,loadingGame=false;
 static int loadingIndex=-1;
 static uint8_t loadStage=0;
@@ -196,15 +196,54 @@ class FlashDisk final : public Faux86::DiskInterface {
  const esp_partition_t *part; uint32_t base,len,pos=0;
  static constexpr uint32_t blockSize=4096,blocks=32;
  uint8_t *cache=nullptr; uint32_t tags[blocks];
+ const uint8_t *mapped=nullptr;
+ esp_partition_mmap_handle_t mapHandle=0;
 public:
- FlashDisk(const esp_partition_t *p,uint32_t b,uint32_t n):part(p),base(b),len(n){cache=(uint8_t*)ps_malloc(blockSize*blocks);for(auto &t:tags)t=UINT32_MAX;}
- ~FlashDisk(){free(cache);}
+ FlashDisk(const esp_partition_t *p,uint32_t b,uint32_t n):part(p),base(b),len(n){
+   for(auto &t:tags)t=UINT32_MAX;
+   if(!isValid())return;
+   const void *ptr=nullptr;
+   esp_err_t err=esp_partition_mmap(part,base,len,ESP_PARTITION_MMAP_DATA,&ptr,&mapHandle);
+   if(err==ESP_OK){
+     mapped=static_cast<const uint8_t*>(ptr);
+     // Validate beginning/end and both sides of 64 KiB physical boundaries.
+     // The disk is read-only, so mapped contents never require invalidation.
+     uint8_t sample[64];
+     auto check=[&](uint32_t offset){
+       const uint32_t count=min<uint32_t>(sizeof(sample),len-offset);
+       return esp_partition_read(part,base+offset,sample,count)==ESP_OK&&
+              memcmp(sample,mapped+offset,count)==0;
+     };
+     bool ok=mapped&&check(0)&&check(len>64?len-64:0);
+     uint32_t boundary=(0x10000u-((part->address+base)&0xffffu))&0xffffu;
+     if(!boundary)boundary=0x10000u;
+     for(uint32_t offset=boundary;ok&&offset<len;offset+=0x10000u){
+       ok=check(offset>=32?offset-32:0);
+       if((offset&0x7ffffu)<0x10000u)vTaskDelay(1);
+     }
+     if(ok){
+       Serial.printf("DOS DISK mmap OK base=%u bytes=%u psram_saved=%u\n",base,len,blockSize*blocks);
+       return;
+     }
+     esp_partition_munmap(mapHandle);mapped=nullptr;
+     Serial.printf("DOS DISK mmap validation failed base=%u; fallback\n",base);
+   }else Serial.printf("DOS DISK mmap unavailable base=%u err=%d; fallback\n",base,(int)err);
+   cache=(uint8_t*)ps_malloc(blockSize*blocks);
+   Serial.printf("DOS DISK backend=%s base=%u bytes=%u\n",cache?"cache":"partition_read",base,len);
+ }
+ ~FlashDisk(){if(mapped)esp_partition_munmap(mapHandle);free(cache);}
  bool isValid() override {return part && len && base<=part->size && len<=part->size-base;}
  uint64_t getSize() override {return len;}
  uint64_t seek(uint64_t offset) override {pos=offset>len?len:offset;return pos;}
  int read(uint8_t *buf,unsigned count) override {
    if(!isValid())return 0; count=static_cast<unsigned>(min<uint32_t>(static_cast<uint32_t>(count),len-pos));
+   if(!count)return 0;
    uint32_t t=micros();unsigned done=0;
+   if(mapped){
+     memcpy(buf,mapped+pos,count);pos+=count;
+     ++diskMappedReads;diskMappedBytes+=count;diskReadUs+=micros()-t;
+     return count;
+   }
    while(done<count){
     uint32_t block=pos/blockSize,offset=pos%blockSize,slot=block%blocks;
     unsigned n=min<uint32_t>(count-done,blockSize-offset);
@@ -625,7 +664,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 054 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 055 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -727,7 +766,7 @@ void dos_tick(){
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
     uint32_t sr=__atomic_exchange_n(&host.video.scaleRows,0,__ATOMIC_RELAXED),sp=__atomic_exchange_n(&host.video.scalePossible,0,__ATOMIC_RELAXED);
     diag_logf(true, "DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
-    Serial.printf("DOS DISK reads=%u hits=%u read_us=%u\n",diskReads,diskHits,diskReadUs);diskReads=diskHits=diskReadUs=0;
+    Serial.printf("DOS DISK reads=%u hits=%u read_us=%u mmap_reads=%u mmap_bytes=%u\n",diskReads,diskHits,diskReadUs,diskMappedReads,diskMappedBytes);diskReads=diskHits=diskReadUs=diskMappedReads=diskMappedBytes=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
   }
