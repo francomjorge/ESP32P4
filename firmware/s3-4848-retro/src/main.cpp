@@ -441,27 +441,28 @@ void loop(){
     if(guardRebootTouch(touchFresh?npoints:1)){dos_tick();return;}
     static uint32_t touchStats=0;
     if(millis()-touchStats>=3000){touchStats=millis();Serial.printf("DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
-    // A single finger held at the top-right corner always returns to PRISMA.
-    static uint32_t homeSince=0;static bool exitSent=false;
-    if(npoints==1&&points[0].x>=424&&points[0].y<56){
-      if(!homeSince)homeSince=millis();
-      if(millis()-homeSince>=900&&!exitSent){exitSent=true;if(!dos_in_launcher())dos_request_exit();}
-      dos_touch_game(2,0,0);dos_tick();return;
-    }
-    homeSince=0;exitSent=false;
-    static uint32_t exitSince=0;static bool gestureSent=false,gestureFromSelector=false,gestureRight=false; static bool prev=false; static Point last{};
+    // A single touch belongs to the game (including the top-right).
+    // Exit only through the toolbar or a deliberate two-finger right
+    // hold, confirmed by a fresh release. Never reboot on stale input.
+    static uint32_t exitSince=0;
+    static bool gesture=false,gestureValid=false,gestureArmed=false;
+    static bool prev=false;static Point last{};
     if(npoints>=2){
-      if(!exitSince){exitSince=millis();gestureFromSelector=dos_in_launcher();gestureRight=dosTouchCurrent.rightPair;gestureSent=false;Serial.printf("DOS GESTURE two fingers right=%d selector=%d\n",gestureRight,gestureFromSelector);}
-      gestureRight=gestureRight&&dosTouchCurrent.rightPair;
-      const uint32_t heldMs=millis()-exitSince;
-      if(gestureRight&&heldMs>=650&&!gestureSent){
-        gestureSent=true;
-        if(!gestureFromSelector){Serial.println("DOS GESTURE exit requested");dos_request_exit();}
+      if(!gesture){gesture=true;gestureValid=touchFresh&&dosTouchCurrent.rightPair&&!dos_in_launcher();gestureArmed=false;exitSince=dosTouchCurrent.at;}
+      if(!touchFresh||!dosTouchCurrent.rightPair||dos_in_launcher())gestureValid=false;
+      if(gestureValid&&!gestureArmed&&uint32_t(dosTouchCurrent.at-exitSince)>=1500){
+        gestureArmed=true;diag_logf(false,"DOS EXIT gesture armed; release to confirm\n");
       }
-      // Never reboot on a held gesture. Recovery requires fresh release after an explicit right-side hold.
       dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;
     }
-    if(exitSince){if(npoints){dos_touch_game(2,0,0);dos_tick();return;}const bool recover=touchFresh&&gestureRight&&!gestureFromSelector&&!dos_in_launcher()&&millis()-exitSince>=3000;exitSince=0;gestureSent=false;if(recover){Serial.println("DOS RECOVERY explicit hold and release");restartToDos(true);}dos_show_launcher();}
+    if(gesture){
+      if(!touchFresh){gestureValid=false;gestureArmed=false;dos_tick();return;}
+      if(npoints){gestureValid=false;gestureArmed=false;dos_touch_game(2,0,0);dos_tick();return;}
+      bool exit=gestureValid&&gestureArmed&&!dos_in_launcher();
+      gesture=gestureValid=gestureArmed=false;
+      if(exit){diag_logf(false,"DOS EXIT cause=two_finger_release\n");dos_request_exit();return;}
+      dos_touch_game(0,0,0);dos_launcher_touch(0,0,0);dos_tick();return;
+    }
     if(dos_launcher_touch(npoints,npoints?points[0].x:0,npoints?points[0].y:0)){prev=false;dos_tick();return;}
     dos_touch_game(npoints,npoints?points[0].x:0,npoints?points[0].y:0);dos_tick();return;
   }
