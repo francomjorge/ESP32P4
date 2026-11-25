@@ -14,6 +14,7 @@ static bool dosActive=false;
 #include "nes_core.h"
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
 #include "private_roms.h"
 #include "async_video.h"
 #include "retro_ui.h"
@@ -293,6 +294,9 @@ static bool load(const String &p){
  if(err){releaseGame();status="Error core: "+String(err);return false;}
  Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
  Serial.printf("MEM ACTIVE heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+#ifdef PRISMA_COMBINED
+ if(nesMode)Serial.printf("NES BASELINE cpu_mhz=%u reset=%d dos_active=%d dos_touch=%d tasks=%u internal_free=%u internal_largest=%u psram_largest=%u\n",getCpuFrequencyMhz(),(int)esp_reset_reason(),(int)dosActive,dosTouchQueue!=nullptr,(unsigned)uxTaskGetNumberOfTasks(),(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+#endif
  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=nextPresent=0;imageHash=imageChanges=imageSamples=0;diagKeys=0;
  queuedFrames=droppedFrames=drawUs=coreUs=0;uint32_t us,n;AsyncVideo::stats(us,n);
  playing=true;gameUI();maxWork=0;markPhase(1);
@@ -305,7 +309,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 040B RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 040C RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
