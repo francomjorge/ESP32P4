@@ -5,7 +5,11 @@ namespace RetroUI {
 constexpr uint16_t rgb(unsigned r,unsigned g,unsigned b){return ((r&248)<<8)|((g&252)<<3)|(b>>3);}
 struct Theme {const char* name;const char* sub;const char* bits;uint16_t bg,card,edge,ink,muted;};
 static const Theme themes[]={
+#ifdef PRISMA_COMBINED
+ {"MS-DOS","PC / x86","DOS",rgb(25,42,31),rgb(45,68,48),rgb(126,165,102),rgb(220,235,185),rgb(166,190,150)},
+#else
  {"GAME BOY","1989 / PORTABLE","8-BIT",rgb(25,42,31),rgb(45,68,48),rgb(126,165,102),rgb(220,235,185),rgb(166,190,150)},
+#endif
  {"NINTENDO NES","1983 / FAMILY COMPUTER","8-BIT",rgb(34,29,32),rgb(66,48,50),rgb(192,92,80),rgb(246,226,202),rgb(209,166,153)}
 };
 static void text(Arduino_GFX& d,int x,int y,const String& s,int size,uint16_t color){d.setTextSize(size);d.setTextColor(color);d.setCursor(x,y);d.print(s);}
@@ -22,8 +26,12 @@ static void console(Arduino_GFX& d,int x,int y,int s,int sys){
  auto round=[&](int a,int b,int w,int h,int r,uint16_t c){d.fillRoundRect(x+a*s,y+b*s,w*s,h*s,r*s,c);};
  auto dot=[&](int a,int b,int r,uint16_t c){d.fillCircle(x+a*s,y+b*s,r*s,c);};
  if(sys==0){
+#ifdef PRISMA_COMBINED
+  box(2,2,30,23,rgb(194,193,177));box(5,5,24,16,rgb(60,71,61));box(12,25,10,4,rgb(126,126,122));box(3,31,28,4,rgb(194,193,177));
+#else
   round(4,0,24,36,3,rgb(194,193,177));round(7,3,18,16,1,rgb(60,71,61));box(9,5,14,12,rgb(150,179,105));
   box(8,24,9,3,rgb(45,48,47));box(11,21,3,9,rgb(45,48,47));dot(22,24,2,rgb(143,40,78));dot(26,21,2,rgb(143,40,78));box(14,32,6,1,rgb(95,96,87));
+#endif
  }else if(sys==1){
   round(0,9,34,20,2,rgb(198,195,183));box(0,16,34,7,rgb(126,126,122));box(4,11,16,4,rgb(89,86,80));box(21,24,10,3,rgb(30,29,30));box(3,24,4,3,rgb(182,52,48));
  }
@@ -55,10 +63,22 @@ static void splash(Arduino_GFX& d){
  for(int i=0;i<6;i++)d.fillRect(168+i*24,350,20,8,colors[i]);
  center(d,240,380,"8-BIT ENTERTAINMENT",2,rgb(152,165,191));
  center(d,240,418,"TOCA PARA INICIAR",2,white);
- center(d,240,458,"ESP32-S3 / BUILD 031",1,rgb(100,115,144));
+ center(d,240,458,
+#ifdef PRISMA_COMBINED
+ "ESP32-S3 / BUILD 032C"
+#else
+ "ESP32-S3 / BUILD 031"
+#endif
+,1,rgb(100,115,144));
 }
 static void home(Arduino_GFX& d,const unsigned counts[2]){
- bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);text(d,415,19,"031",2,0x9cfa);text(d,20,47,"SELECT SYSTEM",2,0x94b2);
+ bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);
+#ifdef PRISMA_COMBINED
+ text(d,403,19,"032C",2,0x9cfa);
+#else
+ text(d,415,19,"031",2,0x9cfa);
+#endif
+text(d,20,47,"SELECT SYSTEM",2,0x94b2);
  for(int i=0;i<2;i++){const auto&t=themes[i];int y=90+i*164;d.fillRoundRect(16,y,448,148,10,t.card);d.drawRoundRect(16,y,448,148,10,t.edge);console(d,32,y+35,2,i);text(d,126,y+32,t.name,i==1?2:3,t.ink);text(d,126,y+60,t.sub,1,t.muted);text(d,126,y+85,String(t.bits)+" / "+counts[i]+" JUEGOS",2,t.ink);text(d,432,y+62,">",3,t.muted);}
  center(d,240,459,"ELEGIR CONSOLA",1,0x94b2);
 }
