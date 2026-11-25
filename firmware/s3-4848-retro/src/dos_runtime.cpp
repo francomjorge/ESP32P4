@@ -47,9 +47,13 @@ public:
   }
 };
 class PrismaTimer final : public Faux86::TimerInterface {
+ uint64_t pausedAt=0, offset=0;
+ bool paused=false;
  public:
  uint64_t getHostFreq() override {return 10000000ULL;}
- uint64_t getTicks() override {return (uint64_t)esp_timer_get_time()*10ULL;}
+ uint64_t getTicks() override {return ((paused?pausedAt:(uint64_t)esp_timer_get_time())-offset)*10ULL;}
+ void pause(){if(!paused){pausedAt=esp_timer_get_time();paused=true;}}
+ void resume(){if(paused){offset+=(uint64_t)esp_timer_get_time()-pausedAt;paused=false;}}
 };
 class PrismaHost final : public Faux86::ArduinoHostSystemInterface {
 public:
@@ -127,7 +131,7 @@ static bool injectCommand(const char *cmd){
 static void openLauncher(){
  bootPhase=false;
  dos_key(0);dos_mouse(0,0,false);
- launcher=true;
+ launcher=true;host.timer.pause();
  dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
  dosLcd->setCursor(16,18);dosLcd->print("PRISMA DOS");
  dosLcd->setTextSize(1);dosLcd->setCursor(16,56);dosLcd->print("Elegi un juego / 2 dedos para HOME");
@@ -148,7 +152,7 @@ bool dos_launcher_touch(unsigned n,int x,int y){
   if(choice>=0&&choice<4){
    const char *cmd=gameCmds[choice];Serial.printf("DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
-   launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
+   host.timer.resume();vm->video.updatedscreen=true;launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
   }
   choice=-1;
  }
@@ -169,7 +173,8 @@ static void fail(const char *msg){Serial.println(msg);dosLcd->setCursor(8,8);dos
 bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  dosLcd->fillScreen(0);dosLcd->flush(true);
- Serial.println("BUILD 034 DOS");
+ Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
+ Serial.println("BUILD 035 DOS");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -196,7 +201,8 @@ bool dos_start(Arduino_RGB_Display &display){
 void dos_tick(){
   if(!vm)return;
   if(!launcher)serialInput();
-  if(!launcher){vm->simulate();++steps;}
+  static uint32_t maxSlice=0;
+  if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;}
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
    if(launchPending){if(!prompt)promptGone=true;if(promptGone||millis()-launchTime>15000)launchPending=false;}
@@ -206,6 +212,7 @@ void dos_tick(){
     uint32_t elapsed=millis()-last;
     uint64_t nowInstructions=vm->cpu.totalexec;
     Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,host.video.frames*1000.0/elapsed,host.video.frames?host.video.work/host.video.frames:0,host.video.skipped,ESP.getFreeHeap(),ESP.getFreePsram());
+    Serial.printf("DOS SLICE max_us=%u launcher=%d\n",maxSlice,(int)launcher);maxSlice=0;
     lastInstructions=nowInstructions;host.video.skipped=0;
     host.video.frames=host.video.work=steps=0;last=millis();
   }
