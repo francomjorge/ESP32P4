@@ -138,6 +138,27 @@ struct DosTouchSample {uint8_t n;Point p;bool rightPair;uint32_t at;};
 RTC_NOINIT_ATTR static uint32_t dosReturnMagic;
 RTC_NOINIT_ATTR static uint32_t dosReturnCheck;
 static constexpr uint32_t DOS_RETURN_MAGIC=0x44534c52u;
+static constexpr uint32_t NES_RETURN_MAGIC=0x4e455352u;
+static bool rebootTouchGuard=false;
+static uint32_t rebootReleaseAt=0;
+static void restartToNes(){
+ dosReturnMagic=NES_RETURN_MAGIC;dosReturnCheck=~NES_RETURN_MAGIC;
+ Serial.printf("GAME EXIT RESET target=NES heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+ Serial.flush();ESP.restart();
+}
+void dos_restart_to_selector(){
+ dosReturnMagic=DOS_RETURN_MAGIC;dosReturnCheck=~DOS_RETURN_MAGIC;
+ Serial.printf("GAME EXIT RESET target=DOS heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+ Serial.flush();ESP.restart();
+}
+// Consume the held exit touch; require a stable released screen on reboot.
+static bool guardRebootTouch(unsigned n){
+ if(!rebootTouchGuard)return false;
+ if(n){rebootReleaseAt=0;return true;}
+ if(!rebootReleaseAt)rebootReleaseAt=millis();
+ if(millis()-rebootReleaseAt>=250)rebootTouchGuard=false;
+ return true;
+}
 static void restartToDos(bool toDos){dosReturnMagic=toDos?DOS_RETURN_MAGIC:0;dosReturnCheck=toDos?~DOS_RETURN_MAGIC:0;Serial.printf("DOS GESTURE restart target=%s\n",toDos?"DOS selector":"HOME");Serial.flush();ESP.restart();}
 static QueueHandle_t dosTouchQueue=nullptr;
 static DosTouchSample dosTouchCurrent{};
@@ -361,7 +382,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 047S RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 047R RESET reason=%d\n",(int)esp_reset_reason());
   dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
@@ -380,8 +401,14 @@ void setup(){
   Serial.printf("BOOT 031 private ROM count=%u\n",private_rom_count());
 #ifdef PRISMA_COMBINED
   const bool returnToDos=esp_reset_reason()==ESP_RST_SW&&dosReturnMagic==DOS_RETURN_MAGIC&&dosReturnCheck==~DOS_RETURN_MAGIC;
+  const bool returnToNes=esp_reset_reason()==ESP_RST_SW&&dosReturnMagic==NES_RETURN_MAGIC&&dosReturnCheck==~NES_RETURN_MAGIC;
   dosReturnMagic=dosReturnCheck=0;
+  if(returnToNes){
+    Serial.println("GAME RESET COMPLETE target=NES");
+    rebootTouchGuard=true;splashVisible=false;nesMode=true;scan();menu();return;
+  }
   if(returnToDos){
+    rebootTouchGuard=true;
     Serial.println("DOS GESTURE boot directly to DOS selector");
     AsyncVideo::drain();menuCanvas.release();dosActive=dos_start(lcd);
     if(dosActive){startDosTouch();return;}
@@ -402,6 +429,7 @@ void loop(){
     const bool touchFresh=millis()-dosTouchCurrent.at<=180;
     const unsigned npoints=touchFresh?dosTouchCurrent.n:0;
     const Point points[1]={dosTouchCurrent.p};
+    if(guardRebootTouch(touchFresh?npoints:1)){dos_tick();return;}
     static uint32_t touchStats=0;
     if(millis()-touchStats>=3000){touchStats=millis();Serial.printf("DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
     // A single finger held at the top-right corner always returns to PRISMA.
@@ -430,6 +458,9 @@ void loop(){
   }
 #endif
   pollTouch();
+#ifdef PRISMA_COMBINED
+  if(guardRebootTouch(npoints)){delay(12);return;}
+#endif
   if(splashVisible){
     if(npoints)splashPressed=true;
     else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 031 home begin");homeUI();Serial.println("BOOT 031 home ok");}
@@ -493,7 +524,12 @@ void loop(){
     if(!overlay){overlay=true;overlayArmed=false;}
     else if(overlayArmed){for(int i=0;i<npoints;i++)keys|=GameVideo::input(points[i].x,points[i].y,exit);}
   }else if(overlay){overlayArmed=true;if(millis()-overlayMs>=3000){overlay=false;overlayArmed=false;}}
-  if(exit){releaseGame();status="Juego cerrado";menu();wasDown=true;gestureStart=gestureEnd={0,0};return;}
+  if(exit){
+#ifdef PRISMA_COMBINED
+    if(nesMode){restartToNes();return;}
+#endif
+    releaseGame();status="Juego cerrado";menu();wasDown=true;gestureStart=gestureEnd={0,0};return;
+  }
   const GameVideo::Options videoOptions{layoutMode,overlay};
   const uint32_t period=nesMode?16667:16743;
   const bool due=(int32_t)(frameSeq-nextPresent)>=0;
