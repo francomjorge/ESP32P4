@@ -193,7 +193,7 @@ static void homeUI(){
  home=true;detail=false;unsigned counts[2]={0,0};
  for(const auto& g:builtins)counts[g.nes?1:0]++;
 #ifdef PRISMA_COMBINED
- counts[0]=4;
+ counts[0]=2;
 #endif
  for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[1]++;
  RetroUI::home(ui(),counts);showUI();
@@ -230,12 +230,47 @@ static void drawLayout(Arduino_GFX& d){
  d.fillRect(layoutRect.x,layoutRect.y,layoutRect.w,layoutRect.h,t.bg);
  RetroUI::button(d,162,420,112,48,layoutNames[layoutMode],t);
 }
-static void fixSelection(){
- if(paths.empty())selected=0;else if(selected>=paths.size()||selected/4!=page)selected=page*4;
+static size_t pageSize(){
+#ifdef PRISMA_COMBINED
+ if(nesMode)return 2;
+#endif
+ return 4;
 }
+static void fixSelection(){
+ const size_t n=pageSize();if(paths.empty())selected=0;else if(selected>=paths.size()||selected/n!=page)selected=page*n;
+}
+#ifdef PRISMA_COMBINED
+static void nesCards(Arduino_GFX& d){
+ const auto&t=RetroUI::themes[1];
+ d.fillScreen(0x0842);RetroUI::button(d,12,10,90,44,"HOME",t);
+ RetroUI::text(d,114,10,"PRISMA NES",3,0xffff);
+ RetroUI::text(d,114,39,String(paths.size())+" JUEGOS",1,t.muted);
+ for(size_t row=0;row<2;row++){
+  size_t idx=page*2+row;int y=62+row*184;
+  if(idx>=paths.size())continue;
+  String n=displayName(paths[idx]);const uint16_t* art=nullptr;
+  for(const auto&e:PreviewArt::entries)if(n==e.name){art=e.pixels;break;}
+  d.fillRoundRect(12,y,456,180,8,0x2124);d.drawRoundRect(12,y,456,180,8,0x5e9e);
+  d.fillRect(220,y+15,240,150,0x0842);
+  if(art){static uint16_t line[240];for(int yy=0;yy<150;yy++){memcpy(line,art+(yy*180/150)*240,480);d.draw16bitRGBBitmap(220,y+15+yy,line,240,1);}}
+  else RetroUI::cart(d,303,y+19,74,142,1,RetroUI::seed(n));
+  RetroUI::text(d,24,y+40,n.substring(0,15),2,0xffff);
+  if(n.length()>15)RetroUI::text(d,24,y+66,n.substring(15,30),2,0xffff);
+  RetroUI::text(d,24,y+110,String((unsigned)(romSize(paths[idx])/1024))+" KiB / NES",1,t.muted);
+  RetroUI::text(d,24,y+140,"JUGAR >",2,0xffff);
+ }
+ RetroUI::button(d,12,436,68,32,"<",t);RetroUI::button(d,86,436,68,32,">",t);
+ RetroUI::button(d,162,436,150,32,layoutNames[layoutMode],t);
+ RetroUI::text(d,330,445,String(page+1)+"/"+String(max((size_t)1,(paths.size()+1)/2)),2,t.muted);
+}
+#endif
 static void menu(){
  home=false;detail=false;int sys=systemId();const auto&t=RetroUI::themes[sys];auto& d=ui();
- fixSelection();RetroUI::bg(d,sys);
+ fixSelection();
+#ifdef PRISMA_COMBINED
+ if(nesMode){nesCards(d);showUI();return;}
+#endif
+ RetroUI::bg(d,sys);
  RetroUI::button(d,12,10,90,44,"HOME",t);
  RetroUI::text(d,114,12,t.name,3,t.ink);
  RetroUI::text(d,114,39,String(paths.size())+" CARTUCHOS",1,t.muted);
@@ -254,12 +289,19 @@ static void changeCart(size_t idx){
  drawPreview(d);rects[n++]=previewRect;showUIRects(rects,n);
 }
 static void changePage(){
+#ifdef PRISMA_COMBINED
+ if(nesMode){menu();return;}
+#endif
  fixSelection();auto& d=ui();UIRect rects[5];
  for(size_t i=0;i<4;i++){drawCartRow(d,i);rects[i]=cardRect(i);}
  drawPreview(d);rects[4]=previewRect;showUIRects(rects,5);
 }
 static void changeLayout(){
- layoutMode=(layoutMode+1)%3;drawLayout(ui());showUIRects(&layoutRect,1);
+ layoutMode=(layoutMode+1)%3;
+#ifdef PRISMA_COMBINED
+ if(nesMode){menu();return;}
+#endif
+ drawLayout(ui());showUIRects(&layoutRect,1);
 }
 static void gameUI(){
  lcd.fillScreen(0);lcd.flush(true);GameVideo::reset();overlay=false;overlayArmed=false;launchRelease=true;overlayMs=0;
@@ -314,7 +356,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 042B RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 042D RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -404,9 +446,24 @@ void loop(){
 #endif
       if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=90&&p.y<410){int s=(p.y-90)/164;if(s<2&&(p.y-90)%164<148){nesMode=s==1;scan();menu();}}}
       else if(abs(dy)>55&&abs(dy)>abs(dx)){
-        size_t old=page;if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;
+        size_t old=page;if(dy<0&&(page+1)*pageSize()<paths.size())page++;else if(dy>0&&page)page--;
         if(old!=page)changePage();
       }else if(abs(dy)<36&&abs(dx)<36){
+#ifdef PRISMA_COMBINED
+        if(nesMode){
+          if(hit(p,12,10,90,44))homeUI();
+          else if(hit(p,12,436,68,32)){if(page){page--;changePage();}}
+          else if(hit(p,86,436,68,32)){if((page+1)*2<paths.size()){page++;changePage();}}
+          else if(hit(p,162,436,150,32))changeLayout();
+          else if(p.x>=12&&p.x<468&&p.y>=62&&p.y<426&&(p.y-62)%184<180){
+            size_t i=page*2+(p.y-62)/184;
+            if(i<paths.size()){
+              selected=i;auto& d=ui();const auto&t=RetroUI::themes[1];RetroUI::bg(d,1);RetroUI::center(d,240,210,"CARGANDO...",3,t.ink);showUI();menuCanvas.release();
+              if(!load(paths[selected]))menu();
+            }
+          }
+        }else
+#endif
         if(hit(p,12,10,90,44))homeUI();
         else if(hit(p,12,420,68,48)){if(page){page--;changePage();}}
         else if(hit(p,86,420,68,48)){if((page+1)*4<paths.size()){page++;changePage();}}
