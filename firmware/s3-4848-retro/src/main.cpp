@@ -201,7 +201,11 @@ static bool leanPrivate(unsigned i){
 }
 static void scan(){
  paths.clear();page=0;selected=0;
- if(nesMode)for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))paths.push_back(String("#")+private_rom_name(i));
+ if(nesMode){
+ const char* order[]={"64-in-1","Super Mario Bros.","1200-in-1"};
+ for(auto name:order){int i=private_rom_find(name);if(i>=0&&leanPrivate(i))paths.push_back(String("#")+name);}
+ for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i)){bool seen=false;for(auto name:order)if(!strcmp(name,private_rom_name(i)))seen=true;if(!seen)paths.push_back(String("#")+private_rom_name(i));}
+ }
  for(const auto &g:builtins)if(g.nes==nesMode)paths.push_back(String("@")+g.name);
  status=String(paths.size())+" juegos internos";
  Serial.printf("ROM library %s: %u games\n",nesMode?"NES":"GB",(unsigned)paths.size());
@@ -218,7 +222,7 @@ static void homeUI(){
  home=true;detail=false;unsigned counts[2]={0,0};
  for(const auto& g:builtins)counts[g.nes?1:0]++;
 #ifdef PRISMA_COMBINED
- counts[0]=2;
+ counts[0]=3;
 #endif
  for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[1]++;
  RetroUI::home(ui(),counts);showUI();
@@ -257,7 +261,7 @@ static void drawLayout(Arduino_GFX& d){
 }
 static size_t pageSize(){
 #ifdef PRISMA_COMBINED
- if(nesMode)return 2;
+ if(nesMode)return 1;
 #endif
  return 4;
 }
@@ -270,23 +274,19 @@ static void nesCards(Arduino_GFX& d){
  d.fillScreen(0x0842);RetroUI::button(d,12,10,90,44,"HOME",t);
  RetroUI::text(d,114,10,"PRISMA NES",3,0xffff);
  RetroUI::text(d,114,39,String(paths.size())+" JUEGOS",1,t.muted);
- for(size_t row=0;row<2;row++){
-  size_t idx=page*2+row;int y=62+row*184;
-  if(idx>=paths.size())continue;
-  String n=displayName(paths[idx]);const uint16_t* art=nullptr;
-  for(const auto&e:PreviewArt::entries)if(n==e.name){art=e.pixels;break;}
-  d.fillRoundRect(12,y,456,180,8,0x2124);d.drawRoundRect(12,y,456,180,8,0x5e9e);
-  d.fillRect(220,y+15,240,150,0x0842);
-  if(art){static uint16_t line[240];for(int yy=0;yy<150;yy++){memcpy(line,art+(yy*180/150)*240,480);d.draw16bitRGBBitmap(220,y+15+yy,line,240,1);}}
-  else RetroUI::cart(d,303,y+19,74,142,1,RetroUI::seed(n));
-  RetroUI::text(d,24,y+40,n.substring(0,15),2,0xffff);
-  if(n.length()>15)RetroUI::text(d,24,y+66,n.substring(15,30),2,0xffff);
-  RetroUI::text(d,24,y+110,String((unsigned)(romSize(paths[idx])/1024))+" KiB / NES",1,t.muted);
-  RetroUI::text(d,24,y+140,"JUGAR >",2,0xffff);
- }
- RetroUI::button(d,12,436,68,32,"<",t);RetroUI::button(d,86,436,68,32,">",t);
- RetroUI::button(d,162,436,150,32,layoutNames[layoutMode],t);
- RetroUI::text(d,330,445,String(page+1)+"/"+String(max((size_t)1,(paths.size()+1)/2)),2,t.muted);
+ if(page>=paths.size())return;
+ String n=displayName(paths[page]);const uint16_t* art=nullptr;
+ for(const auto&e:PreviewArt::entries)if(n==e.name){art=e.pixels;break;}
+ d.fillRoundRect(56,70,368,344,8,0x2124);d.drawRoundRect(56,70,368,344,8,0x5e9e);
+ if(art){static uint16_t line[344];for(int y=0;y<258;y++){for(int x=0;x<344;x++)line[x]=art[(y*180/258)*240+x*240/344];d.draw16bitRGBBitmap(68,82+y,line,344,1);}}
+ else RetroUI::cart(d,176,95,128,228,1,RetroUI::seed(n));
+ RetroUI::center(d,240,352,n,2,0xffff);
+ RetroUI::center(d,240,382,String((unsigned)(romSize(paths[page])/1024))+" KiB / NES",1,t.muted);
+ for(int side=0;side<2;side++){int x=side?430:6;bool enabled=side?page+1<paths.size():page>0;uint16_t ink=enabled?0xffff:0x4208;
+ d.fillRoundRect(x,184,44,84,6,enabled?0x39a7:0x18c3);d.drawRoundRect(x,184,44,84,6,ink);RetroUI::text(d,x+10,211,side?">":"<",4,ink);}
+ RetroUI::button(d,12,436,150,32,layoutNames[layoutMode],t);
+ RetroUI::center(d,240,444,String(page+1)+"/"+String(paths.size()),2,t.muted);
+ RetroUI::button(d,318,436,150,32,"JUGAR",t,true);
 }
 #endif
 static void menu(){
@@ -380,7 +380,7 @@ static bool load(const String &p){
 }
 #ifdef PRISMA_COMBINED
 void prisma_diag_status(){
- Serial.printf("PRISMA STATUS build=051 mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
+ Serial.printf("PRISMA STATUS build=052 mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
 }
 bool prisma_diag_bench(){return dosActive&&dos_diag_bench();}
 #endif
@@ -390,7 +390,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 051 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 052 RESET reason=%d\n",(int)esp_reset_reason());
   diag_begin();dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
@@ -490,20 +490,29 @@ void loop(){
       }
 #endif
       if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=90&&p.y<410){int s=(p.y-90)/164;if(s<2&&(p.y-90)%164<148){nesMode=s==1;scan();menu();}}}
-      else if(abs(dy)>55&&abs(dy)>abs(dx)){
+#ifdef PRISMA_COMBINED
+      else if(nesMode&&abs(dx)>55&&abs(dx)>abs(dy)){
+        size_t old=page;if(dx<0&&page+1<paths.size())page++;else if(dx>0&&page)page--;
+        if(old!=page)changePage();
+      }
+#endif
+      else if(abs(dy)>55&&abs(dy)>abs(dx)
+#ifdef PRISMA_COMBINED
+        &&!nesMode
+#endif
+      ){
         size_t old=page;if(dy<0&&(page+1)*pageSize()<paths.size())page++;else if(dy>0&&page)page--;
         if(old!=page)changePage();
       }else if(abs(dy)<36&&abs(dx)<36){
 #ifdef PRISMA_COMBINED
         if(nesMode){
           if(hit(p,12,10,90,44))homeUI();
-          else if(hit(p,12,436,68,32)){if(page){page--;changePage();}}
-          else if(hit(p,86,436,68,32)){if((page+1)*2<paths.size()){page++;changePage();}}
-          else if(hit(p,162,436,150,32))changeLayout();
-          else if(p.x>=12&&p.x<468&&p.y>=62&&p.y<426&&(p.y-62)%184<180){
-            size_t i=page*2+(p.y-62)/184;
-            if(i<paths.size()){
-              selected=i;auto& d=ui();const auto&t=RetroUI::themes[1];RetroUI::bg(d,1);RetroUI::center(d,240,210,"CARGANDO...",3,t.ink);showUI();menuCanvas.release();
+          else if(hit(p,6,184,44,84)){if(page){page--;changePage();}}
+          else if(hit(p,430,184,44,84)){if(page+1<paths.size()){page++;changePage();}}
+          else if(hit(p,12,436,150,32))changeLayout();
+          else if(hit(p,318,436,150,32)||hit(p,56,70,368,344)){
+            if(page<paths.size()){
+              selected=page;auto& d=ui();const auto&t=RetroUI::themes[1];RetroUI::bg(d,1);RetroUI::center(d,240,210,"CARGANDO...",3,t.ink);showUI();menuCanvas.release();
               if(!load(paths[selected]))menu();
             }
           }
