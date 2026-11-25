@@ -276,6 +276,13 @@ static uint32_t directAt=0,directBefore=0,directRelease=0;
 static bool directQueued=false,directClick=false,directFlightClick=false;
 static uint16_t directX=0,directY=0;
 static uint32_t directMoves=0,directTimeouts=0;
+static bool monkeyTapArmed=false;
+static uint32_t monkeyTapAt=0,monkeySingle=0,monkeyDouble=0,monkeyClicksApplied=0,monkeyPositionMaxUs=0;
+static int monkeyTapX=0,monkeyTapY=0;
+// Two nearby completed taps produce one guest click. Unsigned subtraction handles millis wrap.
+static bool monkeyDoubleTap(bool armed,uint32_t now,uint32_t prior,int x,int y,int oldX,int oldY){
+ return armed && uint32_t(now-prior)<=350 && abs(x-oldX)+abs(y-oldY)<=24;
+}
 static bool queueDirect(int x,int y,bool click){
  uint16_t nx,ny;
  if(!host.video.touchPosition(x,y,nx,ny))return false;
@@ -284,6 +291,7 @@ static bool queueDirect(int x,int y,bool click){
  directX=nx;directY=ny;directQueued=true;directClick=click;return true;
 }
 static void cancelDirect(){
+ monkeyTapArmed=false;
  directQueued=directClick=directFlightClick=false;directAt=directRelease=0;
  if(vm&&!vm->cpu.prismaMouseInCall)vm->cpu.prismaMousePending=false;
 }
@@ -602,8 +610,9 @@ void dos_touch_game(unsigned n,int x,int y){
  static uint32_t started=0,releaseAt=0,rightRelease=0;
  if(releaseAt&&int32_t(millis()-releaseAt)>=0){dos_mouse(0,0,false);releaseAt=0;}
  if(rightRelease&&int32_t(millis()-rightRelease)>=0){vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Right);rightRelease=0;rightDown=false;}
- if(launcher||bootPhase||loadingGame||pendingPanel!=255){finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
+ if(launcher||bootPhase||loadingGame||pendingPanel!=255){monkeyTapArmed=false;finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
  const bool absolute=activeGame>=0&&activeGame<2;
+ const bool monkey=activeGame==1;
  if(n>1&&absolute){cancelDirect();dos_mouse(0,0,false);}
  if(n!=1){
    if(finger&&panelTouch&&n==0&&pending&&!repeatStarted){
@@ -616,9 +625,20 @@ void dos_touch_game(unsigned n,int x,int y){
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
      else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)!=2)overlayTap(k);
    }else if(finger&&!panelTouch&&!moved&&!drag&&n==0&&millis()-started<350){
-     if(absolute){queueDirect(px,py,true);}
+     if(monkey){
+       uint16_t nx,ny;const uint32_t now=millis();
+       if(host.video.touchPosition(px,py,nx,ny)){
+         if(monkeyDoubleTap(monkeyTapArmed,now,monkeyTapAt,px,py,monkeyTapX,monkeyTapY)){
+           monkeyTapArmed=false;
+           if(queueDirect(px,py,true))++monkeyDouble;
+         }else{
+           monkeyTapArmed=true;monkeyTapAt=now;monkeyTapX=px;monkeyTapY=py;++monkeySingle;
+         }
+       }else monkeyTapArmed=false;
+     }else if(absolute){queueDirect(px,py,true);}
      else{dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
    }
+   if(monkey&&finger&&(panelTouch||moved||drag||n!=0||millis()-started>=350))monkeyTapArmed=false;
    if(drag)dos_mouse(0,0,false);
    finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;
  }
@@ -626,7 +646,7 @@ void dos_touch_game(unsigned n,int x,int y){
   finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=repeatStarted=false;
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
   if(!panelTouch&&x<56&&y<56&&(!absolute||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3)){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
-  if(panelTouch){if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
+  if(panelTouch){monkeyTapArmed=false;if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
   if(absolute)queueDirect(x,y,false);
  }
  if(panelTouch){
@@ -656,6 +676,12 @@ void dos_touch_game(unsigned n,int x,int y){
  }
  dos_key(0);
  if(abs(x-ox)+abs(y-oy)>9)moved=true;
+ if(monkey){
+   if(moved)monkeyTapArmed=false;
+   // Absolute cursor tracking only; no held mouse button on a slide or long press.
+   if(abs(x-px)+abs(y-py)>=3 && queueDirect(x,y,false)){px=x;py=y;}
+   return;
+ }
  if(absolute){
    // Follow touch using the existing absolute-position request. Keep the
    // original relative drag path for an intentional long press.
@@ -673,7 +699,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 058P DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 058M DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -701,8 +727,9 @@ void dos_tick(){
   if(!vm)return;
   if(!launcher){serialInput();pumpText();}else diag_poll();
   if(directAt&&vm->cpu.prismaMouseApplied!=directBefore){
+    if(activeGame==1)monkeyPositionMaxUs=max(monkeyPositionMaxUs,uint32_t(millis()-directAt)*1000u);
     directAt=0;++directMoves;
-    if(directFlightClick){dos_mouse(0,0,true);directRelease=millis()+150;++touchClicks;}
+    if(directFlightClick){dos_mouse(0,0,true);directRelease=millis()+150;++touchClicks;if(activeGame==1)++monkeyClicksApplied;}
     directFlightClick=false;
   }else if(directAt&&millis()-directAt>800&&!vm->cpu.prismaMouseInCall){
     directAt=0;directFlightClick=false;vm->cpu.prismaMousePending=false;++directTimeouts;
@@ -767,6 +794,7 @@ void dos_tick(){
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
     Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
+    if(activeGame==1){Serial.printf("DOS MOUSE TAP singles=%u double_req=%u clicks=%u pos_max_us=%u\n",monkeySingle,monkeyDouble,monkeyClicksApplied,monkeyPositionMaxUs);monkeyPositionMaxUs=0;}
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
     diag_logf(true, "DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
