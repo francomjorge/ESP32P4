@@ -14,6 +14,7 @@ static bool dosActive=false;
 #include "nes_core.h"
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include "private_roms.h"
 #include "async_video.h"
@@ -131,17 +132,21 @@ static void pollTouch(){
   clearTouch();
 }
 #ifdef PRISMA_COMBINED
-struct DosTouchSample {uint8_t n;Point p;};
+struct DosTouchSample {uint8_t n;Point p;bool rightPair;};
+RTC_NOINIT_ATTR static uint32_t dosReturnMagic;
+RTC_NOINIT_ATTR static uint32_t dosReturnCheck;
+static constexpr uint32_t DOS_RETURN_MAGIC=0x44534c52u;
+static void restartToDos(bool toDos){dosReturnMagic=toDos?DOS_RETURN_MAGIC:0;dosReturnCheck=toDos?~DOS_RETURN_MAGIC:0;Serial.printf("DOS GESTURE restart target=%s\n",toDos?"DOS selector":"HOME");Serial.flush();ESP.restart();}
 static QueueHandle_t dosTouchQueue=nullptr;
 static DosTouchSample dosTouchCurrent{};
 static uint32_t dosTouchDrops=0;
 static void dosTouchWorker(void*){
-  DosTouchSample previous{255,{0,0}};
+  DosTouchSample previous{255,{0,0},false};
   uint32_t sentAt=0;
   for(;;){
     pollTouch();
-    DosTouchSample sample{npoints,npoints?points[0]:Point{}};
-    if(sample.n!=previous.n||sample.p.x!=previous.p.x||sample.p.y!=previous.p.y||millis()-sentAt>=40){
+    DosTouchSample sample{npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240};
+    if(sample.n!=previous.n||sample.p.x!=previous.p.x||sample.p.y!=previous.p.y||sample.rightPair!=previous.rightPair||millis()-sentAt>=40){
       if(xQueueSend(dosTouchQueue,&sample,pdMS_TO_TICKS(5))==pdTRUE){previous=sample;sentAt=millis();}
       else __atomic_fetch_add(&dosTouchDrops,1,__ATOMIC_RELAXED);
     }
@@ -309,7 +314,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 042 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 042B RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -325,6 +330,16 @@ void setup(){
   pinMode(39,OUTPUT);digitalWrite(39,HIGH);
   Serial.println("BOOT 031 private ROM init");private_rom_init();
   Serial.printf("BOOT 031 private ROM count=%u\n",private_rom_count());
+#ifdef PRISMA_COMBINED
+  const bool returnToDos=esp_reset_reason()==ESP_RST_SW&&dosReturnMagic==DOS_RETURN_MAGIC&&dosReturnCheck==~DOS_RETURN_MAGIC;
+  dosReturnMagic=dosReturnCheck=0;
+  if(returnToDos){
+    Serial.println("DOS GESTURE boot directly to DOS selector");
+    AsyncVideo::drain();menuCanvas.release();dosActive=dos_start(lcd);
+    if(dosActive){startDosTouch();return;}
+    Serial.println("DOS GESTURE init failed; reboot HOME");Serial.flush();ESP.restart();
+  }
+#endif
   Serial.println("BOOT 031 splash begin");RetroUI::splash(ui());showUI();
   Serial.println("BOOT 031 splash ready / waiting touch");
   Serial.printf("BOOT NES library: %u private ROMs, %u entries\n",private_rom_count(),(unsigned)paths.size());
@@ -335,7 +350,7 @@ void loop(){
   if(playing)markPhase(1);
   #ifdef PRISMA_COMBINED
   if(dosActive){
-    if(dosTouchQueue){xQueueReceive(dosTouchQueue,&dosTouchCurrent,0);}else{pollTouch();dosTouchCurrent={npoints,npoints?points[0]:Point{}};}
+    if(dosTouchQueue){xQueueReceive(dosTouchQueue,&dosTouchCurrent,0);}else{pollTouch();dosTouchCurrent={npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240};}
     const unsigned npoints=dosTouchCurrent.n;
     const Point points[1]={dosTouchCurrent.p};
     static uint32_t touchStats=0;
@@ -348,9 +363,21 @@ void loop(){
       dos_touch_game(2,0,0);dos_tick();return;
     }
     homeSince=0;exitSent=false;
-    static uint32_t exitSince=0; static bool prev=false; static Point last{};
-    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>3000){Serial.println("DOS RESET REQUEST: emergency HOME");Serial.flush();ESP.restart();}dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
-    if(exitSince){exitSince=0;dos_show_launcher();}
+    static uint32_t exitSince=0;static bool gestureSent=false,gestureFromSelector=false,gestureRight=false; static bool prev=false; static Point last{};
+    if(npoints>=2){
+      if(!exitSince){exitSince=millis();gestureFromSelector=dos_in_launcher();gestureRight=dosTouchCurrent.rightPair;gestureSent=false;Serial.printf("DOS GESTURE two fingers right=%d selector=%d\n",gestureRight,gestureFromSelector);}
+      gestureRight=gestureRight||dosTouchCurrent.rightPair;
+      const uint32_t heldMs=millis()-exitSince;
+      if(gestureRight&&heldMs>=650&&!gestureSent){
+        gestureSent=true;
+        if(gestureFromSelector)restartToDos(false);
+        else {Serial.println("DOS GESTURE exit requested");dos_request_exit();}
+      }
+      if(heldMs>=2000&&gestureRight&&!gestureFromSelector&&!dos_in_launcher())restartToDos(true);
+      if(heldMs>=3000&&!gestureRight)restartToDos(!gestureFromSelector);
+      dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;
+    }
+    if(exitSince){if(npoints){dos_touch_game(2,0,0);dos_tick();return;}exitSince=0;gestureSent=false;dos_show_launcher();}
     if(dos_launcher_touch(npoints,npoints?points[0].x:0,npoints?points[0].y:0)){prev=false;dos_tick();return;}
     dos_touch_game(npoints,npoints?points[0].x:0,npoints?points[0].y:0);dos_tick();return;
   }
