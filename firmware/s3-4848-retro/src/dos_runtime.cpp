@@ -16,19 +16,23 @@ static uint32_t serialKeys=0,touchClicks=0;
 static const char *gameNames[]={"Carmen Sandiego","The Incredible Machine","Indiana Jones - Last Crusade","Indiana Jones - Temple of Doom"};
 static const char *gameCmds[]={"carmen","tim","indy3","indy2"};
 
+static void renderSnapshot();
 class PrismaVideo final : public Faux86::FrameBufferInterface {
   Faux86::RenderSurface surface{};
   uint16_t *cache=nullptr;
   uint16_t xmap[480],ymap[480],row[480];
   int oldW=0,oldH=0,jobW=0,jobH=0;
-  bool invalid=true,retry=false,jobClear=false;
+  bool invalid=true,jobClear=false;
   SemaphoreHandle_t idle=nullptr;
   TaskHandle_t task=nullptr;
   static void worker(void *arg){
     auto *self=static_cast<PrismaVideo*>(arg);
     for(;;){
       ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-      self->present();
+      uint32_t t=micros();renderSnapshot();
+      uint32_t us=micros()-t;
+      uint32_t old=__atomic_load_n(&self->renderMax,__ATOMIC_RELAXED);
+      while(us>old&&!__atomic_compare_exchange_n(&self->renderMax,&old,us,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){}
       xSemaphoreGive(self->idle);
     }
   }
@@ -41,9 +45,12 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
     __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);
   }
 public:
-  uint32_t frames=0, work=0, skipped=0, dropped=0;
-  void invalidate(){invalid=true;}
-  bool needsRetry(){bool v=retry;retry=false;return v;}
+  uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
+  void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);}
+  bool asyncReady(){return task!=nullptr;}
+  bool acquire(){return idle&&xSemaphoreTake(idle,0)==pdTRUE;}
+  void release(){if(idle)xSemaphoreGive(idle);}
+  void submit(){xTaskNotifyGive(task);}
   void drain(){if(idle){xSemaphoreTake(idle,portMAX_DELAY);xSemaphoreGive(idle);}}
   bool allocate(){
     cache=(uint16_t*)ps_malloc(480*480*2);
@@ -53,28 +60,27 @@ public:
       xSemaphoreGive(idle);
       if(xTaskCreatePinnedToCore(worker,"dosLCD",4096,this,3,&task,0)!=pdPASS){vSemaphoreDelete(idle);idle=nullptr;}
     }
-    Serial.printf("DOS LCD worker=%s\n",task?"core0":"sync");
+    Serial.printf("DOS VGA+LCD worker=%s\n",task?"core0":"sync");
     return true;
   }
   Faux86::RenderSurface *getSurface() override {return &surface;}
   void setPalette(Faux86::Palette*) override {}
   void blit(uint16_t *pixels,int w,int h,int stride) override {
     if(!pixels||w<=0||h<=0||w>VGA_FRAMEBUFFER_WIDTH||h>VGA_FRAMEBUFFER_HEIGHT||stride<w*2||!cache)return;
-    if(launcher){++skipped;return;}
-    if(idle&&xSemaphoreTake(idle,0)!=pdTRUE){retry=true;++dropped;return;}
+    if(launcher){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);return;}
     int dw=min(w,480),dh=min(h,480);
     if((w==320||w==640)&&h==200){dw=480;dh=360;}
-    if(w!=oldW||h!=oldH){invalid=true;oldW=w;oldH=h;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
-    bool changed=invalid;
+    bool force=__atomic_exchange_n(&invalid,false,__ATOMIC_RELAXED);
+    if(w!=oldW||h!=oldH){force=true;oldW=w;oldH=h;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
+    bool changed=force;
     for(int y=0;y<dh;y++){
       const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
       if(dw==w)memcpy(row,src,dw*2);else for(int x=0;x<dw;x++)row[x]=src[xmap[x]];
       uint16_t *prev=cache+y*dw;
-      if(invalid||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;}
+      if(force||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;}
     }
-    jobW=dw;jobH=dh;jobClear=invalid;invalid=false;
-    if(changed){if(task)xTaskNotifyGive(task);else present();}
-    else{++skipped;if(idle)xSemaphoreGive(idle);}
+    jobW=dw;jobH=dh;jobClear=force;
+    if(changed)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
   }
 };
 class PrismaTimer final : public Faux86::TimerInterface {
@@ -112,6 +118,7 @@ struct DiskHeader {char magic[8];uint32_t floppyOffset,floppySize,hardOffset,har
 static PrismaHost host;
 static Faux86::Config cfg(&host);
 static Faux86::VM *vm=nullptr;
+static void renderSnapshot(){vm->video.prismaRenderSnapshot();}
 static uint32_t last=0,steps=0;
 static uint64_t lastInstructions=0;
 static uint32_t promptCheck=0, launchTime=0;
@@ -273,7 +280,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  dosLcd->fillScreen(0);dosLcd->flush(true);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 037 DOS");
+ Serial.println("BUILD 038 DOS");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -300,10 +307,18 @@ bool dos_start(Arduino_RGB_Display &display){
 void dos_tick(){
   if(!vm)return;
   if(!launcher)serialInput();
-  static uint32_t maxSlice=0,maxRender=0;
+  static uint32_t maxSlice=0,maxCapture=0;
   if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
-    if(host.video.needsRetry())vm->video.updatedscreen=true;
-    if(vm->video.prismaDrawDue){vm->video.prismaDrawDue=false;uint32_t rt=micros();vm->video.vga_drawCallback(0);uint32_t ru=micros()-rt;if(ru>maxRender)maxRender=ru;}
+    if(vm->video.prismaDrawDue){
+      if(!vm->video.updatedscreen)vm->video.prismaDrawDue=false;
+      else if(!host.video.asyncReady()){vm->video.prismaDrawDue=false;vm->video.vga_drawCallback(0);}
+      else if(host.video.acquire()){
+        vm->video.prismaDrawDue=false;uint32_t rt=micros();
+        if(vm->video.prismaCapture())host.video.submit();
+        else{vm->video.vga_drawCallback(0);host.video.release();}
+        uint32_t us=micros()-rt;if(us>maxCapture)maxCapture=us;
+      }else ++host.video.dropped;
+    }
   }
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
@@ -314,10 +329,12 @@ void dos_tick(){
     uint32_t elapsed=millis()-last;
     uint64_t nowInstructions=vm->cpu.totalexec;
     uint32_t shown=__atomic_exchange_n(&host.video.frames,0,__ATOMIC_RELAXED),drawUs=__atomic_exchange_n(&host.video.work,0,__ATOMIC_RELAXED);
-    Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,host.video.skipped,ESP.getFreeHeap(),ESP.getFreePsram());
-    Serial.printf("DOS SLICE max_us=%u render_max_us=%u dropped=%u launcher=%d\n",maxSlice,maxRender,host.video.dropped,(int)launcher);maxSlice=maxRender=host.video.dropped=0;
+    uint32_t skipped=__atomic_exchange_n(&host.video.skipped,0,__ATOMIC_RELAXED);
+    uint32_t renderMax=__atomic_exchange_n(&host.video.renderMax,0,__ATOMIC_RELAXED);
+    Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,skipped,ESP.getFreeHeap(),ESP.getFreePsram());
+    Serial.printf("DOS SLICE max_us=%u capture_max_us=%u render_core0_max_us=%u busy=%u launcher=%d\n",maxSlice,maxCapture,renderMax,host.video.dropped,(int)launcher);maxSlice=maxCapture=host.video.dropped=0;
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
-    lastInstructions=nowInstructions;host.video.skipped=0;
+    lastInstructions=nowInstructions;
     steps=0;last=millis();
   }
   static uint32_t lastYield=0;
