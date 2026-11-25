@@ -19,7 +19,8 @@ static uint32_t diskReads=0,diskHits=0,diskReadUs=0;
 static bool bootPhase=true,loadingGame=false;
 static int loadingIndex=-1;
 static uint8_t loadStage=0;
-static uint32_t captureBytes=0;
+static uint32_t captureBytes=0,benchUntil=0,benchStart=0;
+static uint64_t benchInstructions=0;
 static bool hideGuest=true;
 static bool mouseMode=true,consoleMode=false;
 static uint32_t serialKeys=0,touchClicks=0;
@@ -210,8 +211,17 @@ static void showLoading(int game){
  if(game>=0){centered(game<2?gameNames[game]:"Indiana Jones",280,2);if(game>=2)centered(game==2?"Last Crusade":"Temple of Doom",304,2);}
  loadProgress(10,game<0?"Inicializando DOS":"Preparando juego");
 }
+static void logGuestText(){
+ static uint32_t next=0,oldHash=0;static char oldLines[25][81]={};
+ if(!vm||int32_t(millis()-next)<0)return;next=millis()+600;
+ auto &m=vm->memory;unsigned mode=m.readByte(0x449)&0x7f,cols=m.readWord(0x44a);
+ if((mode>3&&mode!=7)||cols<40||cols>80)return;
+ unsigned base=(mode==7?0xb0000:0xb8000)+m.readWord(0x44e);
+ if(base+cols*50>0xc0000)return;
+ for(unsigned y=0;y<25;y++){char line[81];unsigned n=0;for(unsigned x=0;x<cols;x++){unsigned c=m.readByte(base+2*(y*cols+x));line[n++]=c>=32&&c<127?char(c):' ';}while(n&&line[n-1]==' ')--n;line[n]=0;if(strcmp(line,oldLines[y])){strcpy(oldLines[y],line);if(n)Serial.printf("DOS TEXT %s\n",line);}}
+}
 static void openLauncher(){
- bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
+ benchUntil=0;bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
  dos_key(0);dos_mouse(0,0,false);
  host.video.drain();launcher=true;host.timer.pause();
  dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
@@ -288,6 +298,7 @@ static void serialInput(){
  if(state&&millis()-at>80){if(state==1)serialTap(1);state=0;}
  for(int i=0;i<32&&Serial.available()&&vm->input.freeSlots()>=8;i++){
   uint8_t c=Serial.read();
+  if(c==0x1d&&!bootPhase&&!loadingGame){if(!benchUntil){host.video.drain();benchStart=millis();benchUntil=benchStart+5000;benchInstructions=vm->cpu.totalexec;Serial.println("DOS BENCH video disabled 5s");}continue;}
   if(state==1){if(c=='['||c=='O'){state=2;number=0;at=millis();continue;}serialTap(1);state=0;}
   if(state==2){at=millis();if(c>='0'&&c<='9'){number=min(999,number*10+c-'0');continue;}if(c==';'){number=0;continue;}ansiKey(c,number);state=0;continue;}
   if(c==27){state=1;at=millis();continue;}
@@ -358,7 +369,8 @@ void dos_tick(){
   if(!launcher)serialInput();
   static uint32_t maxSlice=0,maxCapture=0;
   if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
-    if(__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
+    if(benchUntil&&int32_t(millis()-benchUntil)>=0){Serial.printf("DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
+    if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
     else if(vm->video.prismaDrawDue){
       if(!vm->video.updatedscreen)vm->video.prismaDrawDue=false;
       else if(!host.video.asyncReady()){vm->video.prismaDrawDue=false;vm->video.vga_drawCallback(0);}
@@ -372,6 +384,7 @@ void dos_tick(){
   }
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
+   if(bootPhase||loadingGame)logGuestText();
    if(bootPhase&&vm->cpu.didbootstrap&&loadStage<75)loadProgress(75,"MS-DOS iniciando");
    if(bootPhase&&prompt)loadProgress(100,"DOS listo");
    if(loadingGame){
