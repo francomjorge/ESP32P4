@@ -37,7 +37,7 @@ static uint32_t diskReads=0,diskHits=0,diskReadUs=0,diskMappedReads=0,diskMapped
 static bool bootPhase=true,loadingGame=false;
 static int loadingIndex=-1;
 static uint8_t loadStage=0;
-static uint32_t captureBytes=0,benchUntil=0,benchStart=0;
+static uint32_t captureBytes=0,captureCopies=0,benchUntil=0,benchStart=0;
 static uint64_t benchInstructions=0;
 static bool hideGuest=true;
 static bool mouseMode=true,consoleMode=false;
@@ -679,7 +679,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 056 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 057 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -728,7 +728,7 @@ void dos_tick(){
       else if(!host.video.asyncReady()){vm->video.prismaDrawDue=false;vm->video.vga_drawCallback(0);}
       else if(host.video.acquire()){
         vm->video.prismaDrawDue=false;uint32_t rt=micros();
-        if(vm->video.prismaCapture()){captureBytes+=vm->video.prismaCaptureBytes();host.video.submit();}
+        if(vm->video.prismaCapture()){captureBytes+=vm->video.prismaCaptureBytes();captureCopies+=vm->video.prismaCaptureCopies();host.video.submit();}
         else{vm->video.vga_drawCallback(0);host.video.release();}
         uint32_t us=micros()-rt;if(us>maxCapture)maxCapture=us;
       }else ++host.video.dropped;
@@ -775,7 +775,7 @@ void dos_tick(){
     Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
     diag_logf(true, "DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
-    Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
+    Serial.printf("DOS VGA capture_bytes=%u copy_calls=%u\n",captureBytes,captureCopies);captureBytes=captureCopies=0;
     uint32_t rasterRows=0,rasterPossible=0;vm->video.prismaRasterStats(rasterRows,rasterPossible);
     Serial.printf("DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);

@@ -1,4 +1,4 @@
-name: S3 Retro - build 056 combined
+name: S3 Retro - build 057 combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -797,6 +797,49 @@ jobs:
           assert src.count(old)==1
           src=src.replace(old,"static DRAM_ATTR const uint8_t parity[0x100]",1)
           p.write_text(src)
+          # 057: compute the common rotate/mask once per planar write.
+          # Preserve all four write modes, latches, enable masks and dirty bits.
+          p=path("Video.cpp","prismaCapture()")
+          src=p.read_text()
+          a=src.index("void Video::vga_writememory(")
+          b=src.index("uint8_t Video::readVGA(",a)
+          section=src[a:b]
+          old="  switch (vga_wmode)\n"
+          assert section.count(old)==1
+          section=section.replace(old,"  const uint8_t rotated=vga_dorotate(value);\n  const uint8_t mask=vga_gfxd[0x08], inverse=uint8_t(~mask);\n"+old,1)
+          assert section.count("temp = vga_dorotate(value);")==1
+          section=section.replace("temp = vga_dorotate(value);","temp = rotated;")
+          assert section.count("(temp & vga_gfxd[0x08]) | (vga_latch[plane] & (~vga_gfxd[0x08]))")==2
+          section=section.replace("(temp & vga_gfxd[0x08]) | (vga_latch[plane] & (~vga_gfxd[0x08]))","(temp & mask) | (vga_latch[plane] & inverse)")
+          assert section.count("(vga_dorotate(value) & vga_gfxd[0x08]) | (temp & (~vga_gfxd[0x08]))")==1
+          section=section.replace("(vga_dorotate(value) & vga_gfxd[0x08]) | (temp & (~vga_gfxd[0x08]))","(rotated & mask) | (temp & inverse)")
+          src=src[:a]+section+src[b:]
+          # Merge adjacent dirty blocks within each mask word. Preserve the
+          # exact snapshot byte range, without extra copying or dirty marking.
+          old="""while(mask){unsigned bit=__builtin_ctz(mask);unsigned b=(word*32+bit)*256;
+                  memcpy(s.planes[i]+b,vga_RAM[i]+b,256);prismaBytes+=256;mask&=mask-1;}"""
+          assert src.count(old)==1,src.count(old)
+          src=src.replace(old,"""while(mask){
+                  const unsigned bit=__builtin_ctz(mask);
+                  const uint32_t remaining=mask>>bit;
+                  const unsigned run=remaining==0xffffffffu?32:__builtin_ctz(~remaining);
+                  const unsigned b=(word*32+bit)*256,n=run*256;
+                  memcpy(s.planes[i]+b,vga_RAM[i]+b,n);prismaBytes+=n;++prismaCopies;
+                  const uint32_t bits=run==32?0xffffffffu:((1u<<run)-1u)<<bit;
+                  mask&=~bits;
+                }""")
+          old="static uint32_t prismaBytes=0;"
+          assert src.count(old)==1
+          src=src.replace(old,old+"\nstatic uint32_t prismaCopies=0;\nuint32_t Video::prismaCaptureCopies(){return prismaCopies;}")
+          old="prismaBytes=0;\n            memcpy(prismaRenderDirty"
+          assert src.count(old)==1
+          src=src.replace(old,"prismaBytes=0;prismaCopies=0;\n            memcpy(prismaRenderDirty")
+          old="prismaBytes+=65536;"
+          assert src.count(old)==1
+          src=src.replace(old,"prismaBytes+=65536;++prismaCopies;")
+          p.write_text(src)
+          p=path("Video.h","prismaCaptureBytes()")
+          edit(p,[("    uint32_t prismaCaptureBytes();","    uint32_t prismaCaptureBytes();\n    uint32_t prismaCaptureCopies();")])
           # 050: bounded IRAM experiment. Move only the original ModR/M
           # decoder into one non-inlined function; avoid moving the giant
           # exec86 dispatcher or allocating any additional guest RAM.
@@ -927,6 +970,44 @@ jobs:
           Path("src/dos_art.h").write_text("\n".join(out)+"\n")
           PY
       - run: pio run -e esp32-4848s040-combined
+      - name: Test dirty block coalescing and planar write equivalence
+        run: |
+          python - <<'PY'
+          import random
+          rng=random.Random(57)
+          n=0;before=after=0
+          for m in [0,1,0xffffffff,0x80000000,0x55555555,0xaaaaaaaa]+[rng.getrandbits(32) for _ in range(20000)]:
+              expected=[i for i in range(32) if m>>i&1]
+              actual=[];calls=0;mask=m
+              while mask:
+                  bit=(mask&-mask).bit_length()-1
+                  remaining=mask>>bit
+                  inv=(~remaining)&0xffffffff
+                  run=(inv&-inv).bit_length()-1 if inv else 32
+                  actual.extend(range(bit,bit+run))
+                  mask&=~(((1<<run)-1)<<bit)
+                  calls+=1
+              assert expected==actual
+              before+=len(expected);after+=calls;n+=1
+          for _ in range(200000):
+              value,latch,mask,rot,logic,mode,sr,enable,plane=[rng.randrange(x) for x in (256,256,256,8,4,4,16,16,4)]
+              rotated=((value>>rot)|(value<<(8-rot)))&255
+              def log(v):return [v,v&latch,v|latch,v^latch][logic]
+              srval=255 if sr>>plane&1 else 0
+              if mode==0:
+                  orig=(log(srval if enable>>plane&1 else rotated)&mask)|(latch&(~mask))
+                  new=(log(srval if enable>>plane&1 else rotated)&mask)|(latch&(255^mask))
+              elif mode==1:orig=new=latch
+              elif mode==2:
+                  v=255 if value>>plane&1 else 0
+                  orig=(log(v)&mask)|(latch&(~mask))
+                  new=(log(v)&mask)|(latch&(255^mask))
+              else:
+                  orig=(rotated&mask)|(srval&(~mask))
+                  new=(rotated&mask)|(srval&(255^mask))
+              assert orig==new
+          print("PRISMA 057 dirty equivalence:",n,"masks; copies",before,"->",after,"; planar cases 200000")
+          PY
       - name: Test repeated scaled row equivalence
         run: |
           python - <<'PY'
@@ -1019,13 +1100,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-056-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-056-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-056.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-057-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-057-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-057.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-056-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-057-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1034,6 +1115,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-056
+          name: PRISMA-RETRO-S3-057
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
