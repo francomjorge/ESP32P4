@@ -382,7 +382,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 047R RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 048 RESET reason=%d\n",(int)esp_reset_reason());
   dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
