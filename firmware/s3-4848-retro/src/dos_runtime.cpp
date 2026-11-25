@@ -4,6 +4,8 @@
 #include <Wire.h>
 #include <Adafruit_Faux86.h>
 #include <esp_timer.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
@@ -16,36 +18,63 @@ static const char *gameCmds[]={"carmen","tim","indy3","indy2"};
 
 class PrismaVideo final : public Faux86::FrameBufferInterface {
   Faux86::RenderSurface surface{};
-  uint16_t row[480], xmap[480];
   uint16_t *cache=nullptr;
-  int oldW=0,oldH=0;
-  bool invalid=true;
+  uint16_t xmap[480],ymap[480],row[480];
+  int oldW=0,oldH=0,jobW=0,jobH=0;
+  bool invalid=true,retry=false,jobClear=false;
+  SemaphoreHandle_t idle=nullptr;
+  TaskHandle_t task=nullptr;
+  static void worker(void *arg){
+    auto *self=static_cast<PrismaVideo*>(arg);
+    for(;;){
+      ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+      self->present();
+      xSemaphoreGive(self->idle);
+    }
+  }
+  void present(){
+    uint32_t t=micros();
+    if(jobClear)dosLcd->fillScreen(0);
+    dosLcd->draw16bitRGBBitmap((480-jobW)/2,(480-jobH)/2,cache,jobW,jobH);
+    dosLcd->flush(true);
+    __atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);
+  }
 public:
-  uint32_t frames=0, work=0, skipped=0;
+  uint32_t frames=0, work=0, skipped=0, dropped=0;
   void invalidate(){invalid=true;}
-  void allocate(){cache=(uint16_t*)ps_malloc(480*480*2);}
-
+  bool needsRetry(){bool v=retry;retry=false;return v;}
+  void drain(){if(idle){xSemaphoreTake(idle,portMAX_DELAY);xSemaphoreGive(idle);}}
+  bool allocate(){
+    cache=(uint16_t*)ps_malloc(480*480*2);
+    if(!cache)return false;
+    idle=xSemaphoreCreateBinary();
+    if(idle){
+      xSemaphoreGive(idle);
+      if(xTaskCreatePinnedToCore(worker,"dosLCD",4096,this,3,&task,0)!=pdPASS){vSemaphoreDelete(idle);idle=nullptr;}
+    }
+    Serial.printf("DOS LCD worker=%s\n",task?"core0":"sync");
+    return true;
+  }
   Faux86::RenderSurface *getSurface() override {return &surface;}
   void setPalette(Faux86::Palette*) override {}
   void blit(uint16_t *pixels,int w,int h,int stride) override {
-    if(!pixels || w<=0 || h<=0 || w>VGA_FRAMEBUFFER_WIDTH || h>VGA_FRAMEBUFFER_HEIGHT || stride<w*2) return;
+    if(!pixels||w<=0||h<=0||w>VGA_FRAMEBUFFER_WIDTH||h>VGA_FRAMEBUFFER_HEIGHT||stride<w*2||!cache)return;
     if(launcher){++skipped;return;}
-    uint32_t t=micros();
+    if(idle&&xSemaphoreTake(idle,0)!=pdTRUE){retry=true;++dropped;return;}
     int dw=min(w,480),dh=min(h,480);
-    if(w!=oldW||h!=oldH){invalid=true;oldW=w;oldH=h;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;}
+    if((w==320||w==640)&&h==200){dw=480;dh=360;}
+    if(w!=oldW||h!=oldH){invalid=true;oldW=w;oldH=h;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
     bool changed=invalid;
-    if(invalid)dosLcd->fillScreen(0);
     for(int y=0;y<dh;y++){
-      const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+(y*h/dh)*stride);
+      const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
       if(dw==w)memcpy(row,src,dw*2);else for(int x=0;x<dw;x++)row[x]=src[xmap[x]];
-      uint16_t *prev=cache?cache+y*480:nullptr;
-      if(invalid||!prev||memcmp(prev,row,dw*2)){
-        if(prev)memcpy(prev,row,dw*2);
-        dosLcd->draw16bitRGBBitmap((480-dw)/2,(480-dh)/2+y,row,dw,1);changed=true;
-      }
+      uint16_t *prev=cache+y*dw;
+      if(invalid||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;}
     }
-    invalid=false;
-    if(changed){dosLcd->flush(true);++frames;work+=micros()-t;}else ++skipped;
+    jobW=dw;jobH=dh;jobClear=invalid;invalid=false;
+    if(changed){if(task)xTaskNotifyGive(task);else present();}
+    else{++skipped;if(idle)xSemaphoreGive(idle);}
   }
 };
 class PrismaTimer final : public Faux86::TimerInterface {
@@ -133,7 +162,7 @@ static bool injectCommand(const char *cmd){
 static void openLauncher(){
  bootPhase=false;consoleMode=false;
  dos_key(0);dos_mouse(0,0,false);
- launcher=true;host.timer.pause();
+ host.video.drain();launcher=true;host.timer.pause();
  dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
  dosLcd->setCursor(16,18);dosLcd->print("PRISMA DOS");
  dosLcd->setTextSize(1);dosLcd->setCursor(16,56);dosLcd->print("Elegi un juego / 2 dedos para HOME");
@@ -244,7 +273,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  dosLcd->fillScreen(0);dosLcd->flush(true);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 036 DOS");
+ Serial.println("BUILD 037 DOS");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -261,7 +290,7 @@ bool dos_start(Arduino_RGB_Display &display){
   cfg.setBootDrive("fd0");
   vga_framebuffer=(uint16_t*)ps_calloc(VGA_FRAMEBUFFER_SIZE,sizeof(uint16_t));
   if(!vga_framebuffer){fail("VGA allocation failed");return false;}
-  host.video.allocate();
+  if(!host.video.allocate()){fail("DOS LCD cache allocation failed");return false;}
   vm=new Faux86::VM(cfg);
   if(!vm->init()){vm=nullptr;fail("VM init failed");return false;}
   // Standard BIOS warm-start flag; this BIOS may ignore it.
@@ -271,8 +300,11 @@ bool dos_start(Arduino_RGB_Display &display){
 void dos_tick(){
   if(!vm)return;
   if(!launcher)serialInput();
-  static uint32_t maxSlice=0;
-  if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;}
+  static uint32_t maxSlice=0,maxRender=0;
+  if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
+    if(host.video.needsRetry())vm->video.updatedscreen=true;
+    if(vm->video.prismaDrawDue){vm->video.prismaDrawDue=false;uint32_t rt=micros();vm->video.vga_drawCallback(0);uint32_t ru=micros()-rt;if(ru>maxRender)maxRender=ru;}
+  }
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
    if(launchPending){if(!prompt)promptGone=true;if(promptGone||millis()-launchTime>15000)launchPending=false;}
@@ -281,11 +313,12 @@ void dos_tick(){
   if(millis()-last>=3000){
     uint32_t elapsed=millis()-last;
     uint64_t nowInstructions=vm->cpu.totalexec;
-    Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,host.video.frames*1000.0/elapsed,host.video.frames?host.video.work/host.video.frames:0,host.video.skipped,ESP.getFreeHeap(),ESP.getFreePsram());
-    Serial.printf("DOS SLICE max_us=%u launcher=%d\n",maxSlice,(int)launcher);maxSlice=0;
-    Serial.printf("DOS INPUT serial_keys=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
+    uint32_t shown=__atomic_exchange_n(&host.video.frames,0,__ATOMIC_RELAXED),drawUs=__atomic_exchange_n(&host.video.work,0,__ATOMIC_RELAXED);
+    Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,host.video.skipped,ESP.getFreeHeap(),ESP.getFreePsram());
+    Serial.printf("DOS SLICE max_us=%u render_max_us=%u dropped=%u launcher=%d\n",maxSlice,maxRender,host.video.dropped,(int)launcher);maxSlice=maxRender=host.video.dropped=0;
+    Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     lastInstructions=nowInstructions;host.video.skipped=0;
-    host.video.frames=host.video.work=steps=0;last=millis();
+    steps=0;last=millis();
   }
   static uint32_t lastYield=0;
   if(launcher||millis()-lastYield>=12){lastYield=millis();delay(1);}
