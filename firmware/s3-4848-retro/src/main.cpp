@@ -16,6 +16,7 @@ static bool dosActive=false;
 #include <esp_system.h>
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include "private_roms.h"
 #include "async_video.h"
 #include "retro_ui.h"
@@ -342,6 +343,9 @@ static bool load(const String &p){
  Serial.printf("ROM launched: %s, %u bytes\n",p.c_str(),(unsigned)bytes);
  Serial.printf("MEM ACTIVE heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
 #ifdef PRISMA_COMBINED
+ if(nesMode){int vw,vh,vp;uint16_t *vpal;uint8_t *vpix=nes_core_video(&vw,&vh,&vp,&vpal);
+  Serial.printf("NES MEMORY video=%s palette=%s snapshot=%s pitch=%d\n",vpix?(esp_ptr_internal(vpix)?"INTERNAL":"PSRAM"):"NONE",vpal?(esp_ptr_internal(vpal)?"INTERNAL":"PSRAM"):"NONE",AsyncVideo::snapshot?(esp_ptr_internal(AsyncVideo::snapshot)?"INTERNAL":"PSRAM"):"NONE",vp);
+ }
  if(nesMode)Serial.printf("NES BASELINE cpu_mhz=%u reset=%d dos_active=%d dos_touch=%d tasks=%u internal_free=%u internal_largest=%u psram_largest=%u\n",getCpuFrequencyMhz(),(int)esp_reset_reason(),(int)dosActive,dosTouchQueue!=nullptr,(unsigned)uxTaskGetNumberOfTasks(),(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
 #endif
  perfStart=millis();perfFrames=perfShown=perfWork=perfOver=lastWork=0;frameSeq=nextPresent=0;imageHash=imageChanges=imageSamples=0;diagKeys=0;
@@ -356,7 +360,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 046 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 046N RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
