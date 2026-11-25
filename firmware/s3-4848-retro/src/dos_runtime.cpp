@@ -54,6 +54,7 @@ static const char *gameCmds[]={"carmen","monkey","monkega"};
 
 static void renderSnapshot();
 void dos_restart_to_selector();
+void dos_restart_home();
 class PrismaVideo final : public Faux86::FrameBufferInterface {
   Faux86::RenderSurface surface{};
   uint16_t *cache=nullptr;
@@ -364,7 +365,7 @@ bool dos_launcher_touch(unsigned n,int x,int y){
   down=false;int dx=ex-sx,dy=ey-sy;
   if(abs(dx)>55&&abs(dx)>abs(dy))choice=dx<0?6:5;else if(abs(dx)>35||abs(dy)>35)choice=-1;
   if(choice==5||choice==6){int next=menuGame+(choice==5?-1:1);if(next>=0&&next<3){menuGame=next;drawDosCarousel();}return true;}
-  if(choice==3){Serial.println("DOS MENU HOME");Serial.flush();ESP.restart();}
+  if(choice==3){diag_logf(false,"DOS EXIT cause=home\n");dos_restart_home();return true;}
   if(choice==4){consoleMode=true;activeGame=-1;clearText();__atomic_store_n(&hideGuest,false,__ATOMIC_RELAXED);host.timer.resume();vm->video.updatedscreen=true;launcher=false;host.video.invalidate();setPanel(1);Serial.println("DOS USB CONSOLE");}
   if(choice>=0&&choice<3){
    const char *cmd=gameCmds[choice];diag_logf(false, "DOS LAUNCH %s\n",cmd);
