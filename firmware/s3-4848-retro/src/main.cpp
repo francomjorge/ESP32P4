@@ -380,7 +380,7 @@ static bool load(const String &p){
 }
 #ifdef PRISMA_COMBINED
 void prisma_diag_status(){
- Serial.printf("PRISMA STATUS build=049 mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
+ Serial.printf("PRISMA STATUS build=050 mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
 }
 bool prisma_diag_bench(){return dosActive&&dos_diag_bench();}
 #endif
@@ -390,7 +390,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 049 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 050 RESET reason=%d\n",(int)esp_reset_reason());
   diag_begin();dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
