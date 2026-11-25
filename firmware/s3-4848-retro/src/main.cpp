@@ -309,7 +309,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 041 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 042 RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
