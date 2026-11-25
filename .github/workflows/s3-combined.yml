@@ -1019,9 +1019,10 @@ jobs:
               scans={label:int(scan) for label,scan,*_ in keys}
               if name=="keyboard":
                   assert all(any(k[0]==str(i) and int(k[4])==48 for k in keys) for i in range(10))
-              if name.startswith("monkey"):
-                  assert scans["ABRIR"]==24 and scans["USAR"]==22 and scans["HABLAR"]==20
+              if name=="monkeyQuick":
+                  assert scans=={"A":24,"C":46,"I":17,"R":25,"M":38,"H":20,"U":22,"D":34}
               if name=="monkeyPad":
+                  assert scans["ABRIR"]==24 and scans["USAR"]==22 and scans["HABLAR"]==20 and scans["RECOGER"]==25
                   assert scans["INV+"]==16 and scans["INV-"]==30 and scans["TAB"]==15
           print("058A action geometry validated")
           PY

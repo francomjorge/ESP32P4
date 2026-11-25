@@ -540,7 +540,7 @@ static const PanelKey pad[]={
  PK("ESC",1,320,3,64,36),PK("OCULTAR",243,384,3,88,36),PK("ENTER",28,320,39,72,72),PK("ESPACIO",57,400,39,72,72)
 };
 static const PanelKey monkeyPad[]={
- PK("ABRIR",24,0,0,60,40),PK("CERRAR",46,60,0,60,40),PK("IR A",17,120,0,60,40),PK("COGER",25,180,0,60,40),
+ PK("ABRIR",24,0,0,60,40),PK("CERRAR",46,60,0,60,40),PK("IR A",17,120,0,60,40),PK("RECOGER",25,180,0,60,40),
  PK("MIRAR",38,0,40,60,40),PK("HABLAR",20,60,40,60,40),PK("USAR",22,120,40,60,40),PK("DAR",34,180,40,60,40),
  PK("EMPUJAR",31,0,80,60,40),PK("TIRAR",21,60,80,60,40),PK("ENCENDER",49,120,80,60,40),PK("APAGAR",33,180,80,60,40),
  PK("INV+",16,240,0,40,40),PK("^",72,280,0,40,40),PK("INV-",30,320,0,40,40),
@@ -548,9 +548,11 @@ static const PanelKey monkeyPad[]={
  PK("ESC",1,360,0,40,40),PK("OCULTAR",243,400,0,80,40),PK("ENTER",28,360,44,60,60),PK("ESPACIO",57,420,44,60,60)
 };
 static const PanelKey monkeyQuick[]={
- PK("ABRIR",24,0,0,60,48),PK("CERRAR",46,60,0,60,48),PK("IR A",17,120,0,60,48),PK("COGER",25,180,0,60,48),
- PK("MIRAR",38,240,0,60,48),PK("HABLAR",20,300,0,60,48),PK("USAR",22,360,0,60,48),PK("DAR",34,420,0,60,48)
+ PK("A",24,0,0,60,48),PK("C",46,60,0,60,48),PK("I",17,120,0,60,48),PK("R",25,180,0,60,48),
+ PK("M",38,240,0,60,48),PK("H",20,300,0,60,48),PK("U",22,360,0,60,48),PK("D",34,420,0,60,48)
 };
+static const char *const monkeyQuickNames[]={"ABRIR","CERRAR","IR A","RECOGER","MIRAR","HABLAR","USAR","DAR"};
+static_assert(sizeof(monkeyQuickNames)/sizeof(monkeyQuickNames[0])==sizeof(monkeyQuick)/sizeof(monkeyQuick[0]),"Quick labels");
 #undef PK
 static const OverlayKey toolbar[5]={{"TEXTO",248},{"PAD",244},{"ESC",1},{"ENTER",28},{"MENU",251}};
 static const OverlayKey gameMenu[4]={{"GRABAR",0},{"CARGAR",0},{"VOLVER",243},{"SALIR",252}};
@@ -566,6 +568,16 @@ static void cell(const OverlayKey &k,int x,int y,int w,int h){
  dosLcd->setTextSize(size);dosLcd->setTextColor(k.scan?0xffff:0x7bef);
  dosLcd->setCursor(x+(w-int(strlen(k.label))*6*size)/2,y+(h-8*size)/2);dosLcd->print(k.label);
 }
+static void quickCell(const PanelKey &k,const char *name,int top,bool enabled){
+ const int x=k.x,y=top+k.y,w=k.w,h=k.h;
+ const uint16_t ink=enabled?0xffff:0x7bef;
+ dosLcd->fillRoundRect(x+2,y+2,w-4,h-4,4,enabled?0x31c9:0x2124);
+ dosLcd->drawRoundRect(x+2,y+2,w-4,h-4,4,enabled?0x7d12:0x7bef);
+ dosLcd->setTextColor(ink);dosLcd->setTextSize(3);
+ dosLcd->setCursor(x+(w-18)/2,y+5);dosLcd->print(k.key.label);
+ dosLcd->setTextSize(1);
+ dosLcd->setCursor(x+(w-int(strlen(name))*6)/2,y+34);dosLcd->print(name);
+}
 static void drawPanel(){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(m==3)return;
@@ -577,7 +589,7 @@ static void drawPanel(){
    else{for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
  }else{
    const int bottom=activeGame==1?top+48:top;
-   if(activeGame==1){for(const auto &k:monkeyQuick){OverlayKey key=k.key;if(m!=0)key.scan=0;cell(key,k.x,top+k.y,k.w,k.h);}}
+   if(activeGame==1){unsigned i=0;for(const auto &k:monkeyQuick){quickCell(k,monkeyQuickNames[i++],top,m==0);}}
    if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,bottom,120,48);}
    else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,bottom,240,48);}
    else for(int c=0;c<5;c++){OverlayKey k=toolbar[c];if(c==0&&activeGame==0)k.scan=250;cell(k,c*96,bottom,96,48);}
