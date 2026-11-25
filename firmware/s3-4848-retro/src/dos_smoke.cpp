@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
-#include <SPIFFS.h>
+#include <esp_partition.h>
+#include <Wire.h>
 #include <Adafruit_Faux86.h>
 #include <esp_timer.h>
 
@@ -38,22 +39,38 @@ public:
   Faux86::FrameBufferInterface &getFrameBuffer() override {return video;}
   void resize(uint32_t,uint32_t) override {lcd.fillScreen(0);}
 };
+// Raw read-only disks in a dedicated partition; never mount/format NES storage.
+class FlashDisk final : public Faux86::DiskInterface {
+ const esp_partition_t *part; uint32_t base,len,pos=0;
+public:
+ FlashDisk(const esp_partition_t *p,uint32_t b,uint32_t n):part(p),base(b),len(n){}
+ bool isValid() override {return part && len && base<=part->size && len<=part->size-base;}
+ uint64_t getSize() override {return len;}
+ uint64_t seek(uint64_t offset) override {pos=offset>len?len:offset;return pos;}
+ int read(uint8_t *buf,unsigned count) override {
+   if(!isValid())return 0; count=min(count,len-pos);
+   if(esp_partition_read(part,base+pos,buf,count)!=ESP_OK)return 0;pos+=count;return count;
+ }
+ int write(const uint8_t *,unsigned) override {return 0;}
+};
+struct DiskHeader {char magic[8];uint32_t floppyOffset,floppySize,hardOffset,hardSize;};
 static PrismaHost host;
 static Faux86::Config cfg(&host);
 static Faux86::VM *vm=nullptr;
 static uint32_t last=0,steps=0;
-static void fail(const char *msg){Serial.println(msg);lcd.setCursor(8,8);lcd.setTextColor(0xffff);lcd.setTextSize(2);lcd.println(msg);}
+static void fail(const char *msg){Serial.println(msg);lcd.setCursor(8,8);lcd.setTextColor(0xffff);lcd.setTextSize(2);lcd.println(msg);lcd.flush(true);}
 void setup(){
   Serial.begin(115200); delay(200);
   pinMode(38,OUTPUT);digitalWrite(38,LOW);pinMode(42,OUTPUT);digitalWrite(42,HIGH);
   if(!lcd.begin()){Serial.println("LCD FAIL");return;}
   lcd.fillScreen(0);lcd.flush(true);digitalWrite(38,HIGH);
-  Serial.println("BUILD 032A Faux86 smoke");
-  // Never format or write the existing private ROM partition.
-  if(!SPIFFS.begin(false,"/spiffs",5,"storage")){fail("DOS image unavailable");return;}
-  if(!SPIFFS.exists("/dos.img")){fail("Missing /dos.img");return;}
-  cfg.diskDriveC=host.openFile("/spiffs/dos.img");
-  if(!cfg.diskDriveC || !cfg.diskDriveC->isValid()){fail("Disk open failed");return;}
+  Serial.println("BUILD 032B Faux86 flash disks");
+  const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
+  DiskHeader h{};
+  if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return;}
+  cfg.diskDriveA=new FlashDisk(part,h.floppyOffset,h.floppySize);
+  if(!cfg.diskDriveA->isValid()){fail("Invalid boot disk");return;}
+  if(h.hardSize){cfg.diskDriveC=new FlashDisk(part,h.hardOffset,h.hardSize);if(!cfg.diskDriveC->isValid()){fail("Invalid game disk");return;}}
   cfg.singleThreaded=true;cfg.slowSystem=false;cfg.cpuSpeed=12;
   cfg.frameDelay=66;cfg.framebuffer.width=VGA_FRAMEBUFFER_WIDTH;cfg.framebuffer.height=VGA_FRAMEBUFFER_HEIGHT;
   cfg.enableAudio=false;cfg.useDisneySoundSource=false;cfg.useSoundBlaster=false;cfg.useAdlib=false;cfg.usePCSpeaker=false;
@@ -61,7 +78,7 @@ void setup(){
   cfg.romBasicFile=new Faux86::EmbeddedDisk(rombasic_bin,rombasic_bin_len);
   cfg.videoRomFile=new Faux86::EmbeddedDisk(videorom_bin,videorom_bin_len);
   cfg.asciiFile=new Faux86::EmbeddedDisk(asciivga_dat,asciivga_dat_len);
-  cfg.setBootDrive("hd0");
+  cfg.setBootDrive("fd0");
   vga_framebuffer=(uint16_t*)ps_calloc(VGA_FRAMEBUFFER_SIZE,sizeof(uint16_t));
   if(!vga_framebuffer){fail("VGA allocation failed");return;}
   vm=new Faux86::VM(cfg);
