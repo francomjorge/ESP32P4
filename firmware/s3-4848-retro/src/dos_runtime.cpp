@@ -483,14 +483,16 @@ void dos_touch_game(unsigned n,int x,int y){
  static bool finger=false,moved=false,drag=false,panelTouch=false,rightDown=false;
  static int px=0,py=0,ox=0,oy=0;
  static uint8_t pending=0;
+ static bool repeatStarted=false;
+ static uint32_t repeatAt=0;
  static uint32_t started=0,releaseAt=0,rightRelease=0;
  if(releaseAt&&int32_t(millis()-releaseAt)>=0){dos_mouse(0,0,false);releaseAt=0;}
  if(rightRelease&&int32_t(millis()-rightRelease)>=0){vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Right);rightRelease=0;rightDown=false;}
- if(launcher||bootPhase||loadingGame){finger=moved=drag=panelTouch=false;pending=0;dos_key(0);return;}
+ if(launcher||bootPhase||loadingGame){finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
  const bool absolute=activeGame==0||activeGame==1;
  if(n>1&&absolute){cancelDirect();dos_mouse(0,0,false);}
  if(n!=1){
-   if(finger&&panelTouch&&n==0&&pending){
+   if(finger&&panelTouch&&n==0&&pending&&!repeatStarted){
      const uint8_t k=pending;
      if(k==240||k==241||k==242){mods^=1u<<(k-240);host.video.drain();drawPanel();dosLcd->flush(true);}
      else if(k==250)setPanel(4);else if(k==243)setPanel(0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
@@ -503,16 +505,38 @@ void dos_touch_game(unsigned n,int x,int y){
      else{dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
    }
    if(drag)dos_mouse(0,0,false);
-   finger=moved=drag=panelTouch=false;pending=0;dos_key(0);return;
+   finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;
  }
  if(!finger){
-  finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=false;
+  finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=repeatStarted=false;
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
   if(!panelTouch&&x<56&&y<56&&(!absolute||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3)){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
   if(panelTouch){if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
   if(absolute)queueDirect(x,y,false);
  }
- if(panelTouch)return;
+ if(panelTouch){
+   // Carmen only: keep the verified short tap path. After a deliberate
+   // hold, send physical make/break and bounded typematic make codes.
+   if(activeGame==0&&(pending==28||pending==57)&&
+      (__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==0||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==4)&&!mods){
+     if(y<panelTop()||hitPanel(x,y)!=pending){
+       if(repeatStarted)dos_key(0);
+       pending=0;return;
+     }
+     uint32_t now=millis();
+     if(!repeatStarted&&now-started>=350&&vm->input.freeSlots()>=8){
+       repeatStarted=true;dos_key(pending);repeatAt=now+125;++overlayKeys;
+     }else if(repeatStarted&&int32_t(now-repeatAt)>=0){
+       repeatAt=now+125;
+       // Do not accumulate repeating keys if the guest is not reading.
+       auto &m=vm->memory;
+       if(vm->input.freeSlots()==256&&m.readWord(0x41a)==m.readWord(0x41c)){
+         vm->input.handleKeyDown(pending);++overlayKeys;
+       }
+     }
+   }
+   return;
+ }
  dos_key(0);
  if(abs(x-ox)+abs(y-oy)>9)moved=true;
  if(absolute){
@@ -531,7 +555,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 047 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 047K DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
