@@ -5,6 +5,8 @@
 #include <Adafruit_Faux86.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <esp_attr.h>
+#include <esp_system.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #if __has_include("dos_art.h")
@@ -13,6 +15,17 @@
 namespace DosArt {static const uint16_t *const small[5]={};static const uint16_t *const large[5]={};}
 #endif
 
+// Persist last active phases across watchdog/panic resets. No reset is forced.
+RTC_NOINIT_ATTR static uint32_t dosTraceMagic,dosTraceMain,dosTraceWorker,dosTraceMode;
+static constexpr uint32_t DOS_TRACE_MAGIC=0x44535452;
+static inline void traceMain(uint32_t phase){__atomic_store_n(&dosTraceMain,phase,__ATOMIC_RELAXED);}
+static inline void traceWorker(uint32_t phase){__atomic_store_n(&dosTraceWorker,phase,__ATOMIC_RELAXED);}
+void dos_report_reset(){
+ const auto reason=esp_reset_reason();
+ if(reason!=ESP_RST_POWERON&&reason!=ESP_RST_BROWNOUT&&dosTraceMagic==DOS_TRACE_MAGIC)
+  Serial.printf("DOS PREVIOUS RESET reason=%d main_phase=%u worker_phase=%u panel=%u\n",(int)reason,dosTraceMain,dosTraceWorker,dosTraceMode);
+ dosTraceMagic=0;dosTraceMain=dosTraceWorker=dosTraceMode=0;
+}
 static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
 // Owned by the snapshot renderer; only valid during its synchronous blit.
@@ -53,7 +66,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
     auto *self=static_cast<PrismaVideo*>(arg);
     for(;;){
       ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-      uint32_t t=micros();renderSnapshot();
+      traceWorker(1);uint32_t t=micros();renderSnapshot();traceWorker(0);
       uint32_t us=micros()-t;
       uint32_t old=__atomic_load_n(&self->renderMax,__ATOMIC_RELAXED);
       while(us>old&&!__atomic_compare_exchange_n(&self->renderMax,&old,us,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){}
@@ -61,12 +74,12 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
     }
   }
   void present(){
-    uint32_t t=micros();
+    traceWorker(3);uint32_t t=micros();
     if(jobClear)dosLcd->fillRect(0,0,480,jobTop,0);
     dosLcd->draw16bitRGBBitmap((480-jobW)/2,(jobTop-jobH)/2+dirtyFirst,cache+dirtyFirst*jobW,jobW,dirtyLast-dirtyFirst+1);
     dosLcd->flush(true);
     __atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);
-    __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);traceWorker(1);
   }
 public:
   uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
@@ -74,6 +87,7 @@ public:
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
+  unsigned stackFree(){return task?(unsigned)uxTaskGetStackHighWaterMark(task):0;}
   bool acquire(){return idle&&xSemaphoreTake(idle,0)==pdTRUE;}
   void release(){if(idle)xSemaphoreGive(idle);}
   void submit(){xTaskNotifyGive(task);}
@@ -86,7 +100,7 @@ public:
     idle=xSemaphoreCreateBinary();
     if(idle){
       xSemaphoreGive(idle);
-      if(xTaskCreatePinnedToCore(worker,"dosLCD",4096,this,3,&task,0)!=pdPASS){vSemaphoreDelete(idle);idle=nullptr;}
+      if(xTaskCreatePinnedToCore(worker,"dosLCD",8192,this,3,&task,0)!=pdPASS){vSemaphoreDelete(idle);idle=nullptr;}
     }
     Serial.printf("DOS VGA+LCD worker=%s\n",task?"core0":"sync");
     return true;
@@ -101,12 +115,13 @@ public:
     const int top=panelTop();if(dh>top){dw=max(1,dw*top/dh);dh=top;}
     bool force=__atomic_exchange_n(&invalid,false,__ATOMIC_RELAXED);
     if(w!=oldW||h!=oldH||top!=oldTop){force=true;oldW=w;oldH=h;oldTop=top;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
-    const uint32_t scaleStart=micros();
+    traceWorker(2);const uint32_t scaleStart=micros();uint32_t lastCooperate=scaleStart;
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
     int prevY=-1;
     unsigned processed=0;
     const bool useHints=prismaScaleDirtyValid&&!force&&pixels==vga_framebuffer;
     for(int y=0;y<dh;y++){
+      if((y&31)==0&&micros()-lastCooperate>=15000){vTaskDelay(1);lastCooperate=micros();}
       if(useHints&&!prismaScaleDirtyRows[ymap[y]])continue;
       ++processed;
       const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
@@ -136,6 +151,7 @@ public:
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
     if(changed)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
+    traceWorker(1);
   }
 };
 class PrismaTimer final : public Faux86::TimerInterface {
@@ -445,16 +461,29 @@ static void drawPanel(){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(m==3)return;
  dosLcd->fillRect(0,top,480,480-top,0x0842);
- if(m==1)for(int r=0;r<7;r++)for(int c=0;c<10;c++)cell(keyboard[r][c],c*48,top+r*36,48,36);
- else if(m==2)for(int r=0;r<4;r++)for(int c=0;c<6;c++)cell(pad[r][c],c*80,top+r*39,80,39);
- else if(m==4)for(int r=0;r<5;r++)for(int c=0;c<10;c++)cell(carmenKeyboard[r][c],c*48,top+r*38,48,38);
+ // Panel drawing runs on the producer core; yield between rows so the
+ // idle task and touch worker can run, while the LCD worker is drained.
+ if(m==1)for(int r=0;r<7;r++){for(int c=0;c<10;c++)cell(keyboard[r][c],c*48,top+r*36,48,36);vTaskDelay(1);}
+ else if(m==2)for(int r=0;r<4;r++){for(int c=0;c<6;c++)cell(pad[r][c],c*80,top+r*39,80,39);vTaskDelay(1);}
+ else if(m==4)for(int r=0;r<5;r++){for(int c=0;c<10;c++)cell(carmenKeyboard[r][c],c*48,top+r*38,48,38);vTaskDelay(1);}
  else for(int c=0;c<6;c++)cell(activeGame==0?carmenBar[c]:toolbar[c],c*80,top,80,48);
 }
 static void setPanel(uint8_t mode){
- host.video.drain();__atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mouseMode=mode!=2;mods=0;
- dosLcd->fillScreen(0);drawPanel();dosLcd->flush(true);
+ if(mode>4||!vm)return;
+ traceMain(20);dosTraceMode=mode;
+ const uint32_t started=micros();
+ Serial.printf("DOS PANEL begin mode=%u heap=%u stack=%u\n",mode,ESP.getFreeHeap(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
+ // The producer is the only submitter. Drain before any LCD operation,
+ // then hold the idle semaphore across the entire UI transaction.
+ host.video.drain();
+ const bool locked=host.video.acquire();
+ traceMain(21);
+ __atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mouseMode=mode!=2;mods=0;
+ dosLcd->fillScreen(0);vTaskDelay(1);drawPanel();traceMain(22);dosLcd->flush(true);
  host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;
- Serial.printf("DOS OVERLAY mode=%u\n",mode);
+ if(locked)host.video.release();
+ Serial.printf("DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
+ traceMain(0);
 }
 static uint8_t hitPanel(int x,int y){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
@@ -553,9 +582,10 @@ void dos_touch_game(unsigned n,int x,int y){
 static void fail(const char *msg){Serial.println(msg);dosLcd->setCursor(8,8);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(2);dosLcd->println(msg);dosLcd->flush(true);}
 bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
+ dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 047K DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 047S DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -595,7 +625,7 @@ void dos_tick(){
     directFlightClick=directClick;directQueued=directClick=false;vm->cpu.prismaMousePending=true;directAt=millis();
   }
   static uint32_t maxSlice=0,maxCapture=0;
-  if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
+  if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){Serial.printf("DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
     if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
     else if(vm->video.prismaDrawDue){
@@ -636,6 +666,7 @@ void dos_tick(){
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
     Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
+    Serial.printf("DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
     uint32_t rasterRows=0,rasterPossible=0;vm->video.prismaRasterStats(rasterRows,rasterPossible);
     Serial.printf("DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
@@ -647,5 +678,5 @@ void dos_tick(){
     steps=0;last=millis();
   }
   static uint32_t lastYield=0;
-  if(launcher||millis()-lastYield>=12){lastYield=millis();delay(1);}
+  if(launcher||millis()-lastYield>=8){lastYield=millis();delay(1);}
 }
