@@ -54,6 +54,14 @@ static void pixelLine(Arduino_GFX& d,int x0,int y0,int x1,int y1,uint16_t color,
  for(;;){d.fillRect(x0*4,y0*4,4*weight,4*weight,color);if(x0==x1&&y0==y1)break;int e2=2*err;if(e2>=dy){err+=dy;x0+=sx;}if(e2<=dx){err+=dx;y0+=sy;}}
 }
 static void splash(Arduino_GFX& d){
+#ifdef PRISMA_COMBINED
+ d.fillScreen(0);
+ center(d,240,186,"PRISMA",6,0xffff);
+ center(d,240,246,"RETRO",4,0xffff);
+ center(d,240,420,"TOCA PARA INICIAR",2,0x94b2);
+ center(d,240,458,"BUILD 040",1,0x94b2);
+#else
+
  bg(d,-1);const uint16_t white=rgb(235,241,252);
  const uint16_t colors[]={rgb(255,83,120),rgb(255,155,70),rgb(255,216,94),rgb(91,221,156),rgb(74,165,255),rgb(166,103,235)};
  pixelLine(d,21,34,54,34,white);
@@ -70,11 +78,12 @@ static void splash(Arduino_GFX& d){
  "ESP32-S3 / BUILD 031"
 #endif
 ,1,rgb(100,115,144));
+#endif
 }
 static void home(Arduino_GFX& d,const unsigned counts[2]){
  bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);
 #ifdef PRISMA_COMBINED
- text(d,403,19,"039",2,0x9cfa);
+ text(d,403,19,"040",2,0x9cfa);
 #else
  text(d,415,19,"031",2,0x9cfa);
 #endif
