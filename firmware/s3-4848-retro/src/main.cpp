@@ -4,7 +4,7 @@
 #include <vector>
 #include "gb_core.h"
 #ifdef PRISMA_COMBINED
-bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher();
+bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher(); void dos_touch_game(unsigned,int,int);
 static bool dosActive=false;
 #endif
 #include "builtin_roms.h"
@@ -273,9 +273,12 @@ static bool load(const String &p){
  frameDeadline=micros();return true;
 }
 void setup(){
+#ifdef PRISMA_COMBINED
+  Serial.setRxBufferSize(2048);
+#endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 035 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 036 RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -307,16 +310,14 @@ void loop(){
     if(npoints==1&&points[0].x>=424&&points[0].y<56){
       if(!homeSince)homeSince=millis();
       if(millis()-homeSince>=900){Serial.println("DOS RESET REQUEST: corner HOME");Serial.flush();ESP.restart();}
-      dos_key(0);dos_mouse(0,0,false);dos_tick();return;
+      dos_touch_game(2,0,0);dos_tick();return;
     }
     homeSince=0;
     static uint32_t exitSince=0; static bool prev=false; static Point last{};
-    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200){Serial.println("DOS RESET REQUEST: two fingers");Serial.flush();ESP.restart();}dos_key(0);dos_mouse(0,0,false);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
+    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200){Serial.println("DOS RESET REQUEST: two fingers");Serial.flush();ESP.restart();}dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
     if(exitSince){exitSince=0;dos_show_launcher();}
     if(dos_launcher_touch(npoints,npoints?points[0].x:0,npoints?points[0].y:0)){prev=false;dos_tick();return;}
-    uint8_t k=0;bool mouse=false;int dx=0,dy=0;
-    if(npoints==1){Point p=points[0];if(p.y>400)k=p.x<120?1:p.x<240?0x39:p.x<360?0x1d:0x1c;else if(p.x<80)k=0x4b;else if(p.x>400)k=0x4d;else if(p.y<80)k=0x48;else if(p.y>340)k=0x50;else{mouse=true;if(prev){dx=(int)p.x-last.x;dy=(int)p.y-last.y;}last=p;}}
-    dos_key(k);dos_mouse(dx,dy,mouse);prev=mouse;dos_tick();return;
+    dos_touch_game(npoints,npoints?points[0].x:0,npoints?points[0].y:0);dos_tick();return;
   }
 #endif
   if(splashVisible){
