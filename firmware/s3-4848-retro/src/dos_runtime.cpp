@@ -88,6 +88,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
 public:
   uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
   uint32_t scaleUs=0,scaleCalls=0,scaleRows=0,scalePossible=0;
+  uint32_t scaleCompare=0,scaleReuse=0,scaleCopyBytes=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -123,14 +124,16 @@ public:
     traceWorker(2);const uint32_t scaleStart=micros();uint32_t lastCooperate=scaleStart;
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
     int prevY=-1;
-    unsigned processed=0;
+    bool previousChanged=false;
+    unsigned processed=0,compared=0,reused=0,copiedBytes=0;
     const bool useHints=prismaScaleDirtyValid&&!force&&pixels==vga_framebuffer;
     for(int y=0;y<dh;y++){
       if((y&31)==0&&micros()-lastCooperate>=15000){vTaskDelay(1);lastCooperate=micros();}
       if(useHints&&!prismaScaleDirtyRows[ymap[y]])continue;
       ++processed;
       const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
-      if(ymap[y]!=prevY){
+      const bool repeated=ymap[y]==prevY;
+      if(!repeated){
         if(dw==w)memcpy(row,src,dw*2);
         else{
           // Read the source row sequentially from PSRAM, then gather
@@ -147,12 +150,24 @@ public:
         prevY=ymap[y];
       }
       uint16_t *prev=cache+y*dw;
-      if(force||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;}
+      // In a stable viewport, all cached destination rows mapped to the
+      // same source row are identical (also when dirty hints skip a row).
+      // Reuse the comparison result; never reuse it across geometry changes.
+      bool rowChanged=force;
+      if(!force){
+        if(repeated){rowChanged=previousChanged;++reused;}
+        else{rowChanged=memcmp(prev,row,dw*2)!=0;++compared;}
+      }
+      previousChanged=rowChanged;
+      if(rowChanged){memcpy(prev,row,dw*2);copiedBytes+=dw*2;changed=true;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;}
     }
     __atomic_fetch_add(&scaleUs,micros()-scaleStart,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scaleCalls,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scaleRows,processed,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scalePossible,dh,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scaleCompare,compared,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scaleReuse,reused,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scaleCopyBytes,copiedBytes,__ATOMIC_RELAXED);
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
     if(changed)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
@@ -664,7 +679,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 055 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 056 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -765,7 +780,8 @@ void dos_tick(){
     Serial.printf("DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
     uint32_t sr=__atomic_exchange_n(&host.video.scaleRows,0,__ATOMIC_RELAXED),sp=__atomic_exchange_n(&host.video.scalePossible,0,__ATOMIC_RELAXED);
-    diag_logf(true, "DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
+    const uint32_t sc=__atomic_exchange_n(&host.video.scaleCompare,0,__ATOMIC_RELAXED),su=__atomic_exchange_n(&host.video.scaleReuse,0,__ATOMIC_RELAXED),sb=__atomic_exchange_n(&host.video.scaleCopyBytes,0,__ATOMIC_RELAXED);
+    diag_logf(true, "DOS SCALE avg_us=%u calls=%u rows=%u possible=%u cmp=%u reuse=%u copy_bytes=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp,sc,su,sb);
     Serial.printf("DOS DISK reads=%u hits=%u read_us=%u mmap_reads=%u mmap_bytes=%u\n",diskReads,diskHits,diskReadUs,diskMappedReads,diskMappedBytes);diskReads=diskHits=diskReadUs=diskMappedReads=diskMappedBytes=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
