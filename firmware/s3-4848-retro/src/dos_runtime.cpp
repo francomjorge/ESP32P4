@@ -279,6 +279,59 @@ static uint32_t directMoves=0,directTimeouts=0;
 static bool monkeyTapArmed=false;
 static uint32_t monkeyTapAt=0,monkeySingle=0,monkeyDouble=0,monkeyClicksApplied=0,monkeyPositionMaxUs=0;
 static int monkeyTapX=0,monkeyTapY=0;
+// Experimental keyboard cursor: manual reference, estimated displacement.
+// The game, not INT 33h, owns the visible cursor. Never claim measured coordinates.
+static constexpr int monkeyStep=8; // initial trial, logical 320x200 units per pulse
+static constexpr uint32_t monkeyHoldMs=50,monkeyGapMs=35,monkeyLimitMs=9000;
+static bool mkAnchored=false,mkTarget=false,mkConfirm=false;
+static int mkX=0,mkY=0,mkTX=0,mkTY=0;
+static uint8_t mkKey=0;
+static uint32_t mkDue=0,mkStart=0,mkPulses=0,mkAnchors=0,mkAborted=0;
+static int mkDeltaX=0,mkDeltaY=0;
+static void monkeyKeyCancel(){
+ if(mkKey&&vm)vm->input.handleKeyUp(mkKey);
+ mkKey=0;mkAnchored=mkTarget=mkConfirm=false;mkDue=0;mkDeltaX=mkDeltaY=0;
+}
+static bool monkeyCoords(int x,int y,int &gx,int &gy){
+ uint16_t nx,ny;
+ if(!host.video.touchPosition(x,y,nx,ny))return false;
+ gx=int((uint32_t(nx)*319+32767)/65535);gy=int((uint32_t(ny)*199+32767)/65535);return true;
+}
+static void monkeyAnchor(int x,int y){
+ int gx,gy;if(!monkeyCoords(x,y,gx,gy))return;
+ monkeyKeyCancel();mkAnchored=true;mkX=mkTX=gx;mkY=mkTY=gy;++mkAnchors;
+ Serial.printf("DOS KEYCURSOR anchor=%d,%d step=%d hold=%u gap=%u\n",gx,gy,monkeyStep,monkeyHoldMs,monkeyGapMs);
+}
+static bool monkeyDestination(int x,int y,bool confirm){
+ int gx,gy;if(!monkeyCoords(x,y,gx,gy))return false;
+ if(!mkAnchored){if(!confirm)monkeyAnchor(x,y);return false;}
+ if(!mkTarget||gx!=mkTX||gy!=mkTY){mkStart=millis();mkConfirm=false;}
+ mkTX=gx;mkTY=gy;mkTarget=true;mkConfirm|=confirm;return true;
+}
+static void serviceMonkeyKeys(){
+ if(!mkAnchored||(!mkTarget&&!mkKey))return;
+ const uint32_t now=millis();
+ if(mkTarget&&now-mkStart>monkeyLimitMs){++mkAborted;monkeyKeyCancel();return;}
+ if(mkDue&&int32_t(now-mkDue)<0)return;
+ if(mkKey){
+   const uint8_t k=mkKey;
+   vm->input.handleKeyUp(k);mkKey=0;mkDue=now+monkeyGapMs;
+   mkX=constrain(mkX+mkDeltaX,0,319);mkY=constrain(mkY+mkDeltaY,0,199);mkDeltaX=mkDeltaY=0;
+   if(k==28)++monkeyClicksApplied;
+   return;
+ }
+ if(vm->input.freeSlots()<254||held)return;
+ const int dx=mkTX-mkX,dy=mkTY-mkY;
+ uint8_t k=0;
+ if(abs(dx)>monkeyStep/2||abs(dy)>monkeyStep/2){
+   if(abs(dx)>=abs(dy)){k=dx>0?77:75;mkDeltaX=dx>0?monkeyStep:-monkeyStep;}
+   else{k=dy>0?80:72;mkDeltaY=dy>0?monkeyStep:-monkeyStep;}
+ }else{
+   mkTarget=false;
+   if(mkConfirm){k=28;mkConfirm=false;}
+ }
+ if(k){vm->input.handleKeyDown(k);mkKey=k;mkDue=now+monkeyHoldMs;if(k!=28)++mkPulses;}
+}
 // Two nearby completed taps produce one guest click. Unsigned subtraction handles millis wrap.
 static bool monkeyDoubleTap(bool armed,uint32_t now,uint32_t prior,int x,int y,int oldX,int oldY){
  return armed && uint32_t(now-prior)<=350 && abs(x-oldX)+abs(y-oldY)<=24;
@@ -291,7 +344,7 @@ static bool queueDirect(int x,int y,bool click){
  directX=nx;directY=ny;directQueued=true;directClick=click;return true;
 }
 static void cancelDirect(){
- monkeyTapArmed=false;
+ monkeyTapArmed=false;monkeyKeyCancel();
  directQueued=directClick=directFlightClick=false;directAt=directRelease=0;
  if(vm&&!vm->cpu.prismaMouseInCall)vm->cpu.prismaMousePending=false;
 }
@@ -630,14 +683,16 @@ void dos_touch_game(unsigned n,int x,int y){
        if(host.video.touchPosition(px,py,nx,ny)){
          if(monkeyDoubleTap(monkeyTapArmed,now,monkeyTapAt,px,py,monkeyTapX,monkeyTapY)){
            monkeyTapArmed=false;
-           if(queueDirect(px,py,true))++monkeyDouble;
+           if(monkeyDestination(px,py,true))++monkeyDouble;
          }else{
            monkeyTapArmed=true;monkeyTapAt=now;monkeyTapX=px;monkeyTapY=py;++monkeySingle;
+           monkeyDestination(px,py,false);
          }
        }else monkeyTapArmed=false;
      }else if(absolute){queueDirect(px,py,true);}
      else{dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
    }
+   if(monkey&&finger&&!panelTouch&&n==0&&!moved&&millis()-started>=650){monkeyAnchor(px,py);}
    if(monkey&&finger&&(panelTouch||moved||drag||n!=0||millis()-started>=350))monkeyTapArmed=false;
    if(drag)dos_mouse(0,0,false);
    finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;
@@ -646,8 +701,8 @@ void dos_touch_game(unsigned n,int x,int y){
   finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=repeatStarted=false;
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
   if(!panelTouch&&x<56&&y<56&&(!absolute||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3)){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
-  if(panelTouch){monkeyTapArmed=false;if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
-  if(absolute)queueDirect(x,y,false);
+  if(panelTouch){monkeyTapArmed=false;if(monkey)monkeyKeyCancel();if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
+  if(absolute&&!monkey)queueDirect(x,y,false);
  }
  if(panelTouch){
    const uint8_t currentMode=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);
@@ -678,8 +733,8 @@ void dos_touch_game(unsigned n,int x,int y){
  if(abs(x-ox)+abs(y-oy)>9)moved=true;
  if(monkey){
    if(moved)monkeyTapArmed=false;
-   // Absolute cursor tracking only; no held mouse button on a slide or long press.
-   if(abs(x-px)+abs(y-py)>=3 && queueDirect(x,y,false)){px=x;py=y;}
+   // Move only when calibrated; a slide updates the destination, never clicks.
+   if(moved&&mkAnchored&&abs(x-px)+abs(y-py)>=3&&monkeyDestination(x,y,false)){px=x;py=y;}
    return;
  }
  if(absolute){
@@ -699,7 +754,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 058M DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 058K DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -740,6 +795,7 @@ void dos_tick(){
     directFlightClick=directClick;directQueued=directClick=false;vm->cpu.prismaMousePending=true;directAt=millis();
   }
   servicePanel();
+  if(activeGame==1&&!launcher&&!bootPhase&&!loadingGame&&pendingPanel==255)serviceMonkeyKeys();
   static uint32_t maxSlice=0,maxCapture=0;
   if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
@@ -795,6 +851,7 @@ void dos_tick(){
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
     Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
     if(activeGame==1){Serial.printf("DOS MOUSE TAP singles=%u double_req=%u clicks=%u pos_max_us=%u\n",monkeySingle,monkeyDouble,monkeyClicksApplied,monkeyPositionMaxUs);monkeyPositionMaxUs=0;}
+    if(activeGame==1)Serial.printf("DOS KEYCURSOR calibrated=%u estimated=%d,%d target=%d,%d active=%u pulses=%u anchors=%u abort=%u\n",(unsigned)mkAnchored,mkX,mkY,mkTX,mkTY,(unsigned)mkTarget,mkPulses,mkAnchors,mkAborted);
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
     diag_logf(true, "DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
