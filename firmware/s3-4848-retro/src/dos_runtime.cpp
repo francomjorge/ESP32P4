@@ -8,6 +8,7 @@
 static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
 static bool launcher=false;
+static bool bootPhase=true;
 static const char *gameNames[]={"Carmen Sandiego","The Incredible Machine","Indiana Jones - Last Crusade","Indiana Jones - Temple of Doom"};
 static const char *gameCmds[]={"carmen","tim","indy3","indy2"};
 
@@ -113,7 +114,18 @@ static bool atPrompt(){
  if(base+8>0xc0000)return false;
  return m.readByte(base)=='C'&&m.readByte(base+2)==':'&&m.readByte(base+4)==92&&m.readByte(base+6)=='>';
 }
+static bool injectCommand(const char *cmd){
+ if(!atPrompt())return false;
+ auto &m=vm->memory;
+ unsigned head=m.readWord(0x41a),tail=m.readWord(0x41c);
+ if(head<0x1e||head>=0x3e||tail<0x1e||tail>=0x3e||(head&1)||(tail&1))return false;
+ if(head!=tail)return false;
+ for(const char *p=cmd;*p;p++){uint8_t k=asciiScan(*p);if(!k)return false;m.writeWord(0x400+tail,(uint16_t(k)<<8)|uint8_t(*p));tail+=2;if(tail>=0x3e)tail=0x1e;}
+ m.writeWord(0x400+tail,0x1c0d);tail+=2;if(tail>=0x3e)tail=0x1e;
+ m.writeWord(0x41c,tail);return true;
+}
 static void openLauncher(){
+ bootPhase=false;
  dos_key(0);dos_mouse(0,0,false);
  launcher=true;
  dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
@@ -135,15 +147,14 @@ bool dos_launcher_touch(unsigned n,int x,int y){
   down=false;
   if(choice>=0&&choice<4){
    const char *cmd=gameCmds[choice];Serial.printf("DOS LAUNCH %s\n",cmd);
-   for(const char *p=cmd;*p;p++){uint8_t k=asciiScan(*p);if(k){vm->input.handleKeyDown(k);vm->input.handleKeyUp(k);}}
-   vm->input.handleKeyDown(0x1c);vm->input.handleKeyUp(0x1c);
+   if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
    launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
   }
   choice=-1;
  }
  return true;
 }
-void dos_show_launcher(){if(vm&&!launcher&&!launchPending)openLauncher();}
+void dos_show_launcher(){if(vm&&!launcher&&!launchPending&&atPrompt())openLauncher();}
 static void serialInput(){
  // ASCII terminal commands, including game launcher batch names.
  static const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm"};
@@ -158,15 +169,15 @@ static void fail(const char *msg){Serial.println(msg);dosLcd->setCursor(8,8);dos
 bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  dosLcd->fillScreen(0);dosLcd->flush(true);
- Serial.println("BUILD 033 DOS");
+ Serial.println("BUILD 034 DOS");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
   cfg.diskDriveA=new FlashDisk(part,h.floppyOffset,h.floppySize);
   if(!cfg.diskDriveA->isValid()){fail("Invalid boot disk");return false;}
   if(h.hardSize){cfg.diskDriveC=new FlashDisk(part,h.hardOffset,h.hardSize);if(!cfg.diskDriveC->isValid()){fail("Invalid game disk");return false;}}
-  cfg.singleThreaded=true;cfg.slowSystem=false;cfg.cpuSpeed=24; cfg.cpuTiming=63;
-  cfg.frameDelay=66;cfg.framebuffer.width=VGA_FRAMEBUFFER_WIDTH;cfg.framebuffer.height=VGA_FRAMEBUFFER_HEIGHT;
+  cfg.singleThreaded=true;cfg.slowSystem=false;cfg.cpuSpeed=120; cfg.cpuTiming=63;
+  cfg.frameDelay=100;cfg.framebuffer.width=VGA_FRAMEBUFFER_WIDTH;cfg.framebuffer.height=VGA_FRAMEBUFFER_HEIGHT;
   cfg.enableAudio=false;cfg.useDisneySoundSource=false;cfg.useSoundBlaster=false;cfg.useAdlib=false;cfg.usePCSpeaker=false;
   cfg.biosFile=new Faux86::EmbeddedDisk(pcxtbios_bin,pcxtbios_bin_len);
   cfg.romBasicFile=new Faux86::EmbeddedDisk(rombasic_bin,rombasic_bin_len);
@@ -178,11 +189,14 @@ bool dos_start(Arduino_RGB_Display &display){
   host.video.allocate();
   vm=new Faux86::VM(cfg);
   if(!vm->init()){vm=nullptr;fail("VM init failed");return false;}
+  // Standard BIOS warm-start flag; this BIOS may ignore it.
+  vm->memory.writeWord(0x472,0x1234);
   host.init(vm);last=millis();lastInstructions=vm->cpu.totalexec;Serial.println("DOS VM READY");return true;
 }
 void dos_tick(){
   if(!vm)return;
-  if(!launcher)serialInput();vm->simulate();++steps;
+  if(!launcher)serialInput();
+  if(!launcher){vm->simulate();++steps;}
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
    if(launchPending){if(!prompt)promptGone=true;if(promptGone||millis()-launchTime>15000)launchPending=false;}
@@ -195,5 +209,6 @@ void dos_tick(){
     lastInstructions=nowInstructions;host.video.skipped=0;
     host.video.frames=host.video.work=steps=0;last=millis();
   }
-  delay(1);
+  static uint32_t lastYield=0;
+  if(launcher||millis()-lastYield>=12){lastYield=millis();delay(1);}
 }
