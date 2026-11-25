@@ -378,7 +378,7 @@ bool dos_launcher_touch(unsigned n,int x,int y){
 }
 void dos_show_launcher(){
  if(vm&&!launcher&&!launchPending&&atPrompt()){
-   if(activeGame>=0){Serial.println("DOS GAME RETURN to prompt");dos_restart_to_selector();return;}
+   if(activeGame>=0)return; // Active games use the debounced prompt check in dos_tick.
    openLauncher();
  }
 }
@@ -387,7 +387,7 @@ void dos_request_exit(){
  if(!vm||launcher)return;
  // Explicit PRISMA EXIT is a full reset, not a guest Escape key.
  // No wait for a hung VM, LCD worker, or keyboard acknowledgement.
- Serial.println("DOS EXIT explicit reset");
+ diag_logf(false,"DOS EXIT explicit reset game=%d\n",activeGame);
  dos_restart_to_selector();
 }
 static void serialTap(uint8_t k,bool shift=false,bool ctrl=false){
@@ -548,7 +548,7 @@ void dos_touch_game(unsigned n,int x,int y){
      const uint8_t k=pending;
      if(k==240||k==241||k==242){mods^=1u<<(k-240);host.video.drain();drawPanel();dosLcd->flush(true);}
      else if(k==250)setPanel(4);else if(k==243)setPanel(0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
-     else if(k==245)dos_request_exit();
+     else if(k==245){diag_logf(false,"DOS EXIT cause=toolbar\n");dos_request_exit();}
      else if(k==246){dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
      else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==1||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==4||activeGame==0)overlayTap(k);
@@ -608,7 +608,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 052 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 052S DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -662,6 +662,7 @@ void dos_tick(){
       }else ++host.video.dropped;
     }
   }
+  static uint32_t gamePromptSince=0;
   if(millis()-promptCheck>=100){
    promptCheck=millis();bool prompt=atPrompt();
    if(bootPhase||loadingGame)logGuestText();
@@ -676,9 +677,18 @@ void dos_tick(){
    }
    if(launchPending){if(!prompt)promptGone=true;if(promptGone||millis()-launchTime>15000)launchPending=false;}
    if(prompt&&!launchPending&&!launcher&&!consoleMode&&millis()-launchTime>1000){
-     if(activeGame>=0){Serial.println("DOS GAME END prompt detected");dos_restart_to_selector();return;}
-     openLauncher();
-   }
+     if(activeGame>=0){
+       // Confirm a persistent, empty DOS prompt, not a transient text-mode
+       // transition while the game is initializing or switching modes.
+       const bool empty=vm->memory.readWord(0x41a)==vm->memory.readWord(0x41c);
+       if(!empty||loadingGame){gamePromptSince=0;}
+       else if(!gamePromptSince)gamePromptSince=millis();
+       else if(millis()-gamePromptSince>=1200){
+         diag_logf(false,"DOS EXIT cause=stable_prompt game=%d elapsed=%u\n",activeGame,millis()-launchTime);
+         dos_restart_to_selector();return;
+       }
+     }else{gamePromptSince=0;openLauncher();}
+   }else gamePromptSince=0;
   }
   if(millis()-last>=3000){
     uint32_t elapsed=millis()-last;
