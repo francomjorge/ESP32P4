@@ -10,6 +10,7 @@ static bool dosActive=false;
 #include "builtin_roms.h"
 #include "nes_core.h"
 #include <esp_partition.h>
+#include <esp_system.h>
 #include "private_roms.h"
 #include "async_video.h"
 #include "retro_ui.h"
@@ -273,6 +274,9 @@ static bool load(const String &p){
 }
 void setup(){
   Serial.begin(115200);delay(200);
+#ifdef PRISMA_COMBINED
+  Serial.printf("BUILD 035 RESET reason=%d\n",(int)esp_reset_reason());
+#endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
   pinMode(38,OUTPUT);digitalWrite(38,LOW);
@@ -302,12 +306,12 @@ void loop(){
     static uint32_t homeSince=0;
     if(npoints==1&&points[0].x>=424&&points[0].y<56){
       if(!homeSince)homeSince=millis();
-      if(millis()-homeSince>=900){Serial.println("DOS HOME escape");ESP.restart();}
+      if(millis()-homeSince>=900){Serial.println("DOS RESET REQUEST: corner HOME");Serial.flush();ESP.restart();}
       dos_key(0);dos_mouse(0,0,false);dos_tick();return;
     }
     homeSince=0;
     static uint32_t exitSince=0; static bool prev=false; static Point last{};
-    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200)ESP.restart();dos_key(0);dos_mouse(0,0,false);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
+    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200){Serial.println("DOS RESET REQUEST: two fingers");Serial.flush();ESP.restart();}dos_key(0);dos_mouse(0,0,false);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
     if(exitSince){exitSince=0;dos_show_launcher();}
     if(dos_launcher_touch(npoints,npoints?points[0].x:0,npoints?points[0].y:0)){prev=false;dos_tick();return;}
     uint8_t k=0;bool mouse=false;int dx=0,dy=0;
@@ -329,7 +333,7 @@ void loop(){
       if(abs(dy)<36&&abs(dx)<36&&hit(p,16,90,448,148)){
         AsyncVideo::drain();menuCanvas.release();
         dosActive=dos_start(lcd);
-        if(!dosActive){delay(1500);ESP.restart();}
+        if(!dosActive){Serial.println("DOS RESET REQUEST: init failed");Serial.flush();delay(1500);ESP.restart();}
         wasDown=false;return;
       }
 #endif
