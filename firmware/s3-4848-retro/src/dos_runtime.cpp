@@ -461,7 +461,7 @@ void dos_touch_game(unsigned n,int x,int y){
  if(!finger){
   finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=false;
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
-  if(!panelTouch&&x<56&&y<56&&activeGame!=0){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
+  if(!panelTouch&&x<56&&y<56&&(!absolute||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3)){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
   if(panelTouch){if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
   if(absolute)queueDirect(x,y,false);
  }
