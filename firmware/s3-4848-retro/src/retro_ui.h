@@ -59,7 +59,7 @@ static void splash(Arduino_GFX& d){
  center(d,240,186,"PRISMA",6,0xffff);
  center(d,240,246,"RETRO",4,0xffff);
  center(d,240,420,"TOCA PARA INICIAR",2,0x94b2);
- center(d,240,458,"BUILD 055",1,0x94b2);
+ center(d,240,458,"BUILD 058",1,0x94b2);
 #else
 
  bg(d,-1);const uint16_t white=rgb(235,241,252);
@@ -83,7 +83,7 @@ static void splash(Arduino_GFX& d){
 static void home(Arduino_GFX& d,const unsigned counts[2]){
  bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);
 #ifdef PRISMA_COMBINED
- text(d,403,19,"055",2,0x9cfa);
+ text(d,403,19,"058",2,0x9cfa);
 #else
  text(d,415,19,"031",2,0x9cfa);
 #endif

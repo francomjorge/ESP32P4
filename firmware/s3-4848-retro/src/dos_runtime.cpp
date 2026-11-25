@@ -43,14 +43,14 @@ static bool hideGuest=true;
 static bool mouseMode=true,consoleMode=false;
 static int activeGame=-1;
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
-static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?304:p==3?480:432;}
+static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:432;}
 static uint32_t overlayKeys=0;
 static void drawPanel();
 static void setPanel(uint8_t mode);
 static uint32_t serialKeys=0,touchClicks=0;
-static const char *gameNames[]={"Carmen Sandiego","Monkey Island VGA","Monkey Island EGA"};
+static const char *gameNames[]={"Carmen Sandiego","Monkey Island VGA"};
 static int menuGame=0;
-static const char *gameCmds[]={"carmen","monkey","monkega"};
+static const char *gameCmds[]={"carmen","monkey"};
 
 static void renderSnapshot();
 void dos_restart_to_selector();
@@ -378,15 +378,15 @@ static void drawDosCarousel(){
  dosLcd->fillRoundRect(12,10,90,44,8,0x2124);
  dosLcd->setTextColor(0xffff);dosLcd->setTextSize(2);dosLcd->setCursor(30,24);dosLcd->print("HOME");
  dosLcd->setTextSize(3);dosLcd->setCursor(114,10);dosLcd->print("PRISMA DOS");
- dosLcd->setTextSize(1);dosLcd->setCursor(114,39);dosLcd->print("3 JUEGOS / ESPANOL");
+ dosLcd->setTextSize(1);dosLcd->setCursor(114,39);dosLcd->print("2 JUEGOS / ESPANOL");
  dosLcd->fillRoundRect(56,70,368,344,8,0x2124);dosLcd->drawRoundRect(56,70,368,344,8,0x5e9e);
  if(DosArt::large[i]){static uint16_t line[344];for(int y=0;y<215;y++){for(int x=0;x<344;x++)line[x]=DosArt::large[i][(y*180/215)*288+x*288/344];dosLcd->draw16bitRGBBitmap(68,100+y,line,344,1);if((y&31)==31)vTaskDelay(1);}}
  else centered("SIN PREVIEW",202,2);
- centered(gameNames[i],352,2);centered(i==0?"MS-DOS / ESPANOL":i==1?"VGA / 256 COLORES":"EGA / 16 COLORES",382,1,0x9cfa);
- for(int side=0;side<2;side++){int x=side?430:6;bool enabled=side?i<2:i>0;uint16_t ink=enabled?0xffff:0x4208;dosLcd->fillRoundRect(x,184,44,84,6,enabled?0x39a7:0x18c3);dosLcd->drawRoundRect(x,184,44,84,6,ink);dosLcd->setTextColor(ink);dosLcd->setTextSize(4);dosLcd->setCursor(x+10,211);dosLcd->print(side?">":"<");}
+ centered(gameNames[i],352,2);centered(i==0?"MS-DOS / ESPANOL":"VGA / 256 COLORES",382,1,0x9cfa);
+ for(int side=0;side<2;side++){int x=side?430:6;bool enabled=side?i<1:i>0;uint16_t ink=enabled?0xffff:0x4208;dosLcd->fillRoundRect(x,184,44,84,6,enabled?0x39a7:0x18c3);dosLcd->drawRoundRect(x,184,44,84,6,ink);dosLcd->setTextColor(ink);dosLcd->setTextSize(4);dosLcd->setCursor(x+10,211);dosLcd->print(side?">":"<");}
  dosLcd->fillRoundRect(12,436,150,32,6,0x2124);dosLcd->fillRoundRect(318,436,150,32,6,0x366e);
  dosLcd->setTextColor(0xffff);dosLcd->setTextSize(2);dosLcd->setCursor(24,444);dosLcd->print("USB");dosLcd->setCursor(352,444);dosLcd->print("JUGAR");
- char pos[12];snprintf(pos,sizeof(pos),"%d/3",i+1);centered(pos,444,2,0x9cfa);dosLcd->flush(true);
+ char pos[12];snprintf(pos,sizeof(pos),"%d/2",i+1);centered(pos,444,2,0x9cfa);dosLcd->flush(true);
 }
 static void openLauncher(){
  benchUntil=0;bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;activeGame=-1;clearText();vm->cpu.prismaMouseEnabled=false;vm->cpu.prismaMousePending=false;cancelDirect();__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
@@ -403,10 +403,10 @@ bool dos_launcher_touch(unsigned n,int x,int y){
  if(!n&&down){
   down=false;int dx=ex-sx,dy=ey-sy;
   if(abs(dx)>55&&abs(dx)>abs(dy))choice=dx<0?6:5;else if(abs(dx)>35||abs(dy)>35)choice=-1;
-  if(choice==5||choice==6){int next=menuGame+(choice==5?-1:1);if(next>=0&&next<3){menuGame=next;drawDosCarousel();}return true;}
+  if(choice==5||choice==6){int next=menuGame+(choice==5?-1:1);if(next>=0&&next<2){menuGame=next;drawDosCarousel();}return true;}
   if(choice==3){diag_logf(false,"DOS EXIT cause=home\n");dos_restart_home();return true;}
   if(choice==4){consoleMode=true;activeGame=-1;clearText();__atomic_store_n(&hideGuest,false,__ATOMIC_RELAXED);host.timer.resume();vm->video.updatedscreen=true;launcher=false;host.video.invalidate();setPanel(1);Serial.println("DOS USB CONSOLE");}
-  if(choice>=0&&choice<3){
+  if(choice>=0&&choice<2){
    const char *cmd=gameCmds[choice];diag_logf(false, "DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
    activeGame=choice;clearText();vm->cpu.prismaMouseEnabled=true;vm->cpu.prismaMousePending=false;
@@ -510,15 +510,16 @@ static const PanelKey keyboard[]={
  PK("ESPACIO",57,0,160,120,40),PK("ESC",1,120,160,80,40),PK("CTRL",241,200,160,60,40),PK("ALT",242,260,160,60,40),PK("-",12,320,160,40,40),PK("TAB",15,360,160,60,40),PK("PAD",244,420,160,60,40)
 };
 static const PanelKey pad[]={
- PK("7",8,0,0,56,44),PK("8",9,56,0,56,44),PK("9",10,112,0,56,44),
- PK("4",5,0,44,56,44),PK("5",6,56,44,56,44),PK("6",7,112,44,56,44),
- PK("1",2,0,88,56,44),PK("2",3,56,88,56,44),PK("3",4,112,88,56,44),PK("0",11,0,132,168,44),
- PK("^",72,236,0,68,64),PK("<",75,168,64,68,64),PK("v",80,236,64,68,64),PK(">",77,304,64,68,64),
- PK("ENTER",28,372,44,108,132),PK("OCULTAR",243,372,0,108,44)
+ PK("7",8,8,3,36,36),PK("8",9,44,3,36,36),PK("9",10,80,3,36,36),
+ PK("4",5,8,39,36,36),PK("5",6,44,39,36,36),PK("6",7,80,39,36,36),
+ PK("1",2,8,75,36,36),PK("2",3,44,75,36,36),PK("3",4,80,75,36,36),PK("0",11,116,75,36,36),
+ PK("^",72,208,3,48,48),PK("<",75,160,51,48,60),PK("v",80,208,51,48,60),PK(">",77,256,51,48,60),
+ PK("ESC",1,320,3,64,36),PK("ENTER",28,320,39,88,36),PK("ESPACIO",57,320,75,152,36),PK("X",243,416,3,56,36)
 };
 #undef PK
-static const OverlayKey toolbar[6]={{"TEXTO",248},{"PAD",244},{"LMB",246},{"RMB",247},{"FULL",249},{"SALIR JUEGO",245}};
-static const OverlayKey carmenBar[6]={{"TEXTO",250},{"CLICK",246},{"IZQ",75},{"DER",77},{"ENTER",28},{"SALIR JUEGO",245}};
+static const OverlayKey toolbar[5]={{"TEXTO",248},{"PAD",244},{"ESC",1},{"ENTER",28},{"MENU",251}};
+static const OverlayKey gameMenu[4]={{"GRABAR",0},{"CARGAR",0},{"VOLVER",243},{"SALIR",252}};
+static const OverlayKey exitMenu[2]={{"CANCELAR",251},{"CONFIRMAR SALIR",253}};
 static uint8_t pendingPanel=255;
 static bool panelRepaint=false;
 static uint8_t mods=0;
@@ -527,7 +528,7 @@ static void cell(const OverlayKey &k,int x,int y,int w,int h){
  dosLcd->fillRoundRect(x+2,y+2,w-4,h-4,4,active?0x366e:0x2124);
  dosLcd->drawRoundRect(x+2,y+2,w-4,h-4,4,0x7bef);
  int size=strlen(k.label)*12<w-6?2:1;
- dosLcd->setTextSize(size);dosLcd->setTextColor(0xffff);
+ dosLcd->setTextSize(size);dosLcd->setTextColor(k.scan?0xffff:0x7bef);
  dosLcd->setCursor(x+(w-int(strlen(k.label))*6*size)/2,y+(h-8*size)/2);dosLcd->print(k.label);
 }
 static void drawPanel(){
@@ -536,11 +537,13 @@ static void drawPanel(){
  dosLcd->fillRect(0,top,480,480-top,0x0842);
  if(m==1||m==4){unsigned n=0;for(const auto &k:keyboard){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%10==0)vTaskDelay(1);}}
  else if(m==2){unsigned n=0;for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
- else for(int c=0;c<6;c++)cell(activeGame==0?carmenBar[c]:toolbar[c],c*80,top,80,48);
+ else if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,top,120,48);}
+ else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,top,240,48);}
+ else for(int c=0;c<5;c++){OverlayKey k=toolbar[c];if(c==0&&activeGame==0)k.scan=250;cell(k,c*96,top,96,48);}
 }
 // Requests never block the producer behind an in-flight VGA frame.
 static void setPanel(uint8_t mode){
- if(mode>4||!vm)return;
+ if(mode>6||!vm)return;
  pendingPanel=mode;
 }
 static void servicePanel(){
@@ -550,16 +553,17 @@ static void servicePanel(){
  if(async&&!host.video.acquire())return;
  const bool change=pendingPanel!=255;
  const uint8_t mode=change?pendingPanel:__atomic_load_n(&panelMode,__ATOMIC_RELAXED);
+ const int previousTop=panelTop();
  pendingPanel=255;panelRepaint=false;
  traceMain(20);dosTraceMode=mode;const uint32_t started=micros();
  if(change){
    diag_logf(false,"DOS PANEL begin mode=%u heap=%u stack=%u\n",mode,ESP.getFreeHeap(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
    __atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mouseMode=mode!=2;mods=0;
    cancelDirect();dos_key(0);dos_mouse(0,0,false);
-   traceMain(21);dosLcd->fillScreen(0);vTaskDelay(1);
+   traceMain(21);if(panelTop()!=previousTop){dosLcd->fillScreen(0);vTaskDelay(1);}
  }
  drawPanel();traceMain(22);dosLcd->flush(true);
- if(change){host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
+ if(change&&panelTop()!=previousTop){host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
  if(async)host.video.release();
  if(change)diag_logf(false,"DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
  traceMain(0);
@@ -570,7 +574,9 @@ static uint8_t hitPanel(int x,int y){
  y-=top;
  if(m==1||m==4){for(const auto &k:keyboard)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
  else if(m==2){for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
- else if(m==0)return (activeGame==0?carmenBar[x/80]:toolbar[x/80]).scan;
+ else if(m==0){if(x<96&&activeGame==0)return 250;return toolbar[x/96].scan;}
+ else if(m==5)return gameMenu[x/120].scan;
+ else if(m==6)return exitMenu[x/240].scan;
  return 0;
 }
 static void overlayTap(uint8_t k){
@@ -597,14 +603,15 @@ void dos_touch_game(unsigned n,int x,int y){
  if(releaseAt&&int32_t(millis()-releaseAt)>=0){dos_mouse(0,0,false);releaseAt=0;}
  if(rightRelease&&int32_t(millis()-rightRelease)>=0){vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Right);rightRelease=0;rightDown=false;}
  if(launcher||bootPhase||loadingGame||pendingPanel!=255){finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
- const bool absolute=activeGame>=0&&activeGame<3;
+ const bool absolute=activeGame>=0&&activeGame<2;
  if(n>1&&absolute){cancelDirect();dos_mouse(0,0,false);}
  if(n!=1){
    if(finger&&panelTouch&&n==0&&pending&&!repeatStarted){
      const uint8_t k=pending;
      if(k==240||k==241||k==242){mods^=1u<<(k-240);panelRepaint=true;}
      else if(k==250)setPanel(4);else if(k==243)setPanel(0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
-     else if(k==245){diag_logf(false,"DOS EXIT cause=toolbar\n");dos_request_exit();}
+     else if(k==251)setPanel(5);else if(k==252)setPanel(6);
+     else if(k==253&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==6){diag_logf(false,"DOS EXIT cause=confirmed_menu\n");dos_request_exit();}
      else if(k==246){dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
      else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)!=2)overlayTap(k);
@@ -623,6 +630,8 @@ void dos_touch_game(unsigned n,int x,int y){
   if(absolute)queueDirect(x,y,false);
  }
  if(panelTouch){
+   const uint8_t currentMode=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);
+   if((currentMode==0||currentMode==5||currentMode==6)&&(hitPanel(x,y)!=pending)){if(repeatStarted)dos_key(0);pending=0;return;}
    // Carmen only: keep the verified short tap path. After a deliberate
    // hold, send physical make/break and bounded typematic make codes.
    if(activeGame==0&&(pending==28||pending==57)&&
@@ -664,7 +673,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 055 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 058 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
