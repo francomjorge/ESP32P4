@@ -498,6 +498,88 @@ static void ansiKey(char final,int number){
  case '~':switch(number){case 1:case 7:k=0x47;break;case 2:k=0x52;break;case 3:k=0x53;break;case 4:case 8:k=0x4f;break;case 5:k=0x49;break;case 6:k=0x51;break;case 11:k=0x3b;break;case 12:k=0x3c;break;case 13:k=0x3d;break;case 14:k=0x3e;break;case 15:k=0x3f;break;case 17:k=0x40;break;case 18:k=0x41;break;case 19:k=0x42;break;case 20:k=0x43;break;case 21:k=0x44;break;}break;}
  serialTap(k);
 }
+// Read-only, on-demand scan of conventional guest RAM. No guest writes.
+// The main DOS producer is paused during each snapshot; LCD worker may finish.
+namespace {
+constexpr uint32_t CURSOR_RAM_BASE=0x500, CURSOR_RAM_END=0xa0000;
+constexpr uint32_t CURSOR_RAM_N=CURSOR_RAM_END-CURSOR_RAM_BASE;
+constexpr uint32_t CURSOR_MASK_N=(CURSOR_RAM_N+7)/8;
+static uint8_t *cursorRamPrev=nullptr,*cursorRamNow=nullptr,*cursorMasks=nullptr;
+static unsigned cursorRounds=0;
+static void cursorRamFree(){
+ free(cursorRamPrev);free(cursorRamNow);free(cursorMasks);
+ cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;
+}
+static bool cursorRamAlloc(){
+ cursorRamPrev=(uint8_t*)ps_malloc(CURSOR_RAM_N);
+ cursorRamNow=(uint8_t*)ps_malloc(CURSOR_RAM_N);
+ cursorMasks=(uint8_t*)ps_malloc(CURSOR_MASK_N*4);
+ if(!cursorRamPrev||!cursorRamNow||!cursorMasks){cursorRamFree();return false;}
+ return true;
+}
+static void cursorRamCapture(uint8_t *dst){
+ for(uint32_t i=0;i<CURSOR_RAM_N;++i){
+   dst[i]=vm->memory.readByte(CURSOR_RAM_BASE+i);
+   if((i&4095)==4095)vTaskDelay(1);
+ }
+}
+// mode 0=x16,1=y16,2=x8,3=y8. Keep unaligned words as candidates.
+static unsigned cursorValue(const uint8_t *p,uint32_t i,unsigned mode){
+ return mode<2?unsigned(p[i])|(unsigned(p[i+1])<<8):unsigned(p[i]);
+}
+static bool cursorMatch(unsigned before,unsigned after,unsigned limit,int direction){
+ if(before>limit||after>limit)return false;
+ return direction>0?after>before:direction<0?after<before:after==before;
+}
+static void cursorReport(){
+ if(!cursorMasks){Serial.println("DOS RAM no baseline");return;}
+ for(unsigned m=0;m<4;++m){
+   uint32_t count=0;
+   uint8_t *mask=cursorMasks+m*CURSOR_MASK_N;
+   for(uint32_t i=0;i<CURSOR_RAM_N-1;++i){
+     if(mask[i>>3]&(1u<<(i&7))){
+       ++count;
+       if(count<=10)Serial.printf("DOS RAM %s addr=%05lx value=%u\n",m==0?"X16":m==1?"Y16":m==2?"X8":"Y8",(unsigned long)(CURSOR_RAM_BASE+i),cursorValue(cursorRamPrev,i,m));
+     }
+     if((i&8191)==8191)vTaskDelay(1);
+   }
+   Serial.printf("DOS RAM count %s=%lu rounds=%u\n",m==0?"X16":m==1?"Y16":m==2?"X8":"Y8",(unsigned long)count,cursorRounds);
+ }
+}
+}
+void dos_cursor_scan(const char *arg){
+ if(!strcmp(arg,"stop")){cursorRamFree();Serial.println("DOS RAM scan released");return;}
+ if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){
+   Serial.println("DOS RAM unavailable: enter Monkey Island and wait for game");return;
+ }
+ if(!strcmp(arg,"base")){
+   cursorRamFree();
+   if(!cursorRamAlloc()){Serial.println("DOS RAM insufficient PSRAM");return;}
+   cursorRamCapture(cursorRamPrev);
+   memset(cursorMasks,255,CURSOR_MASK_N*4);
+   cursorRounds=0;Serial.println("DOS RAM baseline ready; move cursor with PAD, then :cursor right/left/up/down");return;
+ }
+ if(!cursorMasks){Serial.println("DOS RAM use :cursor base first");return;}
+ if(!strcmp(arg,"list")){cursorReport();return;}
+ int dx=0,dy=0;
+ if(!strcmp(arg,"right"))dx=1;else if(!strcmp(arg,"left"))dx=-1;
+ else if(!strcmp(arg,"down"))dy=1;else if(!strcmp(arg,"up"))dy=-1;
+ else{Serial.println("DOS RAM use base/right/left/down/up/list/stop");return;}
+ cursorRamCapture(cursorRamNow);
+ for(unsigned m=0;m<4;++m){
+   uint8_t *mask=cursorMasks+m*CURSOR_MASK_N;
+   const unsigned limit=m<2?1023:255;
+   const int direction=(m&1)?dy:dx;
+   for(uint32_t i=0;i<CURSOR_RAM_N-1;++i){
+     const uint8_t bit=uint8_t(1u<<(i&7));
+     if((mask[i>>3]&bit)&&!cursorMatch(cursorValue(cursorRamPrev,i,m),cursorValue(cursorRamNow,i,m),limit,direction))
+       mask[i>>3]&=uint8_t(~bit);
+     if((i&8191)==8191)vTaskDelay(1);
+   }
+ }
+ uint8_t *tmp=cursorRamPrev;cursorRamPrev=cursorRamNow;cursorRamNow=tmp;
+ ++cursorRounds;Serial.printf("DOS RAM filtered %s\n",arg);cursorReport();
+}
 bool dos_diag_bench(){
  if(!vm||launcher||bootPhase||loadingGame||benchUntil)return false;
  host.video.drain();benchStart=millis();benchUntil=benchStart+5000;benchInstructions=vm->cpu.totalexec;
@@ -714,7 +796,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
