@@ -1,4 +1,4 @@
-name: S3 Retro - build 041 combined
+name: S3 Retro - build 042 combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -324,6 +324,85 @@ jobs:
           p.write_text(src)
           p=path("Video.h","prismaCapture()")
           edit(p,[("    bool prismaCapture();","    bool prismaCapture();\n    uint32_t prismaCaptureBytes();")])
+          # 042: reuse previous RGB pixels for scanlines whose source VGA
+          # blocks have not changed. Full redraw on mode/register/palette
+          # changes and on unsupported layouts. The worker owns the RGB cache.
+          p=path("Video.cpp","prismaCapture()")
+          src=p.read_text()
+          old="static bool prismaFirstCapture=true;"
+          assert src.count(old)==1
+          src=src.replace(old,old+"""
+          static uint32_t prismaRenderDirty[4][8]={};
+          static bool prismaFullRender=true,prismaForceNext=true;
+          static inline bool prismaRangeDirty(unsigned plane,unsigned addr,unsigned count){
+            while(count){
+              unsigned a=addr&65535,block=a>>8;
+              if(prismaRenderDirty[plane][block>>5]&(1u<<(block&31)))return true;
+              unsigned n=256-(a&255);if(n>count)n=count;
+              addr+=n;count-=n;
+            }
+            return false;
+          }
+          static inline bool prismaCgaDirty(unsigned addr){
+            unsigned a=addr&0x7fff;
+            unsigned n=80;if(a+n>0x8000)n=0x8000-a;
+            for(unsigned p=0;p<2;p++){
+              if(prismaRangeDirty(p,a>>1,(n+2)/2))return true;
+              if(n<80&&prismaRangeDirty(p,0,(80-n+2)/2))return true;
+            }
+            return false;
+          }
+          """)
+          old="s.w=vga_w;s.h=vga_h;s.dots=vga_dots;s.shift=vga_shiftmode;s.dbl=vga_dbl;s.blink=vga_cursor_blink_state;"
+          assert src.count(old)==1
+          src=src.replace(old,"""const uint8_t bios=vm.memory.RAM[0x449]&0x7f;
+            prismaFullRender=prismaForceNext||prismaFirstCapture;
+            if(!prismaFullRender){
+              prismaFullRender=s.w!=vga_w||s.h!=vga_h||s.dots!=vga_dots||s.shift!=vga_shiftmode||
+                s.dbl!=vga_dbl||s.bios!=bios||(!(vga_gfxd[6]&1)&&s.blink!=vga_cursor_blink_state)||
+                memcmp(s.crt,vga_crtcd,sizeof(s.crt))||memcmp(s.attr,vga_attrd,sizeof(s.attr))||
+                memcmp(s.gfx,vga_gfxd,sizeof(s.gfx))||memcmp(s.seq,vga_seqd,sizeof(s.seq))||
+                memcmp(s.palette,vgaColor,sizeof(s.palette));
+            }
+            s.w=vga_w;s.h=vga_h;s.dots=vga_dots;s.shift=vga_shiftmode;s.dbl=vga_dbl;s.blink=vga_cursor_blink_state;""")
+          old="if (!s.w||!s.h||s.w>VGA_FRAMEBUFFER_WIDTH||s.h>VGA_FRAMEBUFFER_HEIGHT||!s.dots) return false;"
+          assert src.count(old)==1
+          src=src.replace(old,old.replace("return false;","{prismaForceNext=true;return false;}"))
+          old="prismaBytes=0;\n            for(unsigned i=0;i<4;i++)"
+          # Whitespace of injected triple-quoted block is preserved by Python.
+          import re
+          src,n=re.subn(r"prismaBytes=0;\s+for\(unsigned i=0;i<4;i\+\+\)", "prismaBytes=0;\n            memcpy(prismaRenderDirty,prismaDirty,sizeof(prismaRenderDirty));\n            prismaForceNext=false;\n            for(unsigned i=0;i<4;i++)",src)
+          assert n==1,n
+          old="unsigned addr=start+(y&1)*8192+(y>>1)*80;"
+          assert src.count(old)==1
+          src=src.replace(old,old+"\n                if(!prismaFullRender&&!prismaCgaDirty(addr))continue;")
+          old="prismaSnapshotUpdate(0,0,s.w-1,s.h-1);"
+          assert src.count(old)==1
+          src=src.replace(old,"""if(!prismaFullRender&&(s.gfx[6]&1)&&s.shift==0&&(s.attr[0x12]&15)!=1&&s.w%8==0){
+              // Existing planar 4bpp renderer addresses one byte per eight pixels.
+              unsigned stride=(s.w/((s.seq[1]&8)?2:1))/8;
+              unsigned width=s.w/8,start=(unsigned(s.crt[0x0c])<<8)|s.crt[0x0d];
+              unsigned first=s.h;
+              for(unsigned y=0;y<s.h;y++){
+                unsigned a=(start+y*stride)&65535;
+                bool changed=a+width>65536;
+                for(unsigned p=0;p<4&&!changed;p++)changed=prismaRangeDirty(p,a,width);
+                if(changed){if(first==s.h)first=y;}
+                else if(first!=s.h){prismaSnapshotUpdate(0,first,s.w-1,y-1);first=s.h;}
+              }
+              if(first!=s.h)prismaSnapshotUpdate(0,first,s.w-1,s.h-1);
+            }else if(!prismaFullRender&&(s.gfx[6]&1)&&(s.shift&2)&&s.w%2==0){
+              // Existing 256-color renderer expands each source row yscan times.
+              const unsigned ys=(s.crt[9]&31)+1,stride=s.w/2,start=(unsigned(s.crt[12])<<8)|s.crt[13];
+              if(s.h%ys)prismaSnapshotUpdate(0,0,s.w-1,s.h-1);
+              else for(unsigned y=0;y<s.h;y+=ys){
+                const unsigned a=((y/ys)*stride)&65535;
+                bool changed=a+stride>65536;
+                for(unsigned p=0;p<4&&!changed;p++)changed=prismaRangeDirty(p,(a>>2)+start,(stride+6)/4);
+                if(changed)prismaSnapshotUpdate(0,y,s.w-1,y+ys-1);
+              }
+            }else prismaSnapshotUpdate(0,0,s.w-1,s.h-1);""")
+          p.write_text(src)
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
@@ -383,7 +462,7 @@ jobs:
               ("    case 0xCA: /* CA RETF Iw */\n      oper1 = getmem16(segregs[regcs], ip);\n      ip = pop();\n      segregs[regcs] = pop();\n      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","    case 0xCA: /* CA RETF Iw */\n      oper1 = getmem16(segregs[regcs], ip);\n      ip = pop();\n      segregs[regcs] = pop();\n      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
               ("      decodeflagsword(pop());\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","      decodeflagsword(pop());\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
           ])
-          print("Faux86 041 input patches applied")
+          print("Faux86 042 input patches applied")
           PY
       - name: Prepare DOS preview art
         run: |
@@ -433,13 +512,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-041-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-041-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-041.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-042-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-042-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-042.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-041-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-042-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -448,6 +527,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-041
+          name: PRISMA-RETRO-S3-042
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
