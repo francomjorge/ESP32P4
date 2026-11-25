@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include <Adafruit_Faux86.h>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #if __has_include("dos_art.h")
@@ -37,6 +38,7 @@ static void renderSnapshot();
 class PrismaVideo final : public Faux86::FrameBufferInterface {
   Faux86::RenderSurface surface{};
   uint16_t *cache=nullptr;
+  uint16_t *sourceRow=nullptr;
   uint16_t xmap[480],ymap[480],row[480];
   int oldW=0,oldH=0,jobW=0,jobH=0,oldTop=0,jobTop=480;
   bool invalid=true,jobClear=false;
@@ -65,6 +67,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   }
 public:
   uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
+  uint32_t scaleUs=0,scaleCalls=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -75,6 +78,8 @@ public:
   bool allocate(){
     cache=(uint16_t*)ps_malloc(480*480*2);
     if(!cache)return false;
+    sourceRow=(uint16_t*)heap_caps_malloc(VGA_FRAMEBUFFER_WIDTH*sizeof(uint16_t),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    Serial.printf("DOS SCALE staging=%s\n",sourceRow?"internal":"fallback");
     idle=xSemaphoreCreateBinary();
     if(idle){
       xSemaphoreGive(idle);
@@ -93,14 +98,32 @@ public:
     const int top=panelTop();if(dh>top){dw=max(1,dw*top/dh);dh=top;}
     bool force=__atomic_exchange_n(&invalid,false,__ATOMIC_RELAXED);
     if(w!=oldW||h!=oldH||top!=oldTop){force=true;oldW=w;oldH=h;oldTop=top;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
+    const uint32_t scaleStart=micros();
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
     int prevY=-1;
     for(int y=0;y<dh;y++){
       const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
-      if(ymap[y]!=prevY){if(dw==w)memcpy(row,src,dw*2);else for(int x=0;x<dw;x++)row[x]=src[xmap[x]];prevY=ymap[y];}
+      if(ymap[y]!=prevY){
+        if(dw==w)memcpy(row,src,dw*2);
+        else{
+          // Read the source row sequentially from PSRAM, then gather
+          // nearest-neighbor pixels from internal RAM instead.
+          const uint16_t *sample=src;
+          if(sourceRow){memcpy(sourceRow,src,w*sizeof(uint16_t));sample=sourceRow;}
+          int x=0;
+          for(;x+3<dw;x+=4){
+            row[x]=sample[xmap[x]];row[x+1]=sample[xmap[x+1]];
+            row[x+2]=sample[xmap[x+2]];row[x+3]=sample[xmap[x+3]];
+          }
+          for(;x<dw;x++)row[x]=sample[xmap[x]];
+        }
+        prevY=ymap[y];
+      }
       uint16_t *prev=cache+y*dw;
       if(force||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;}
     }
+    __atomic_fetch_add(&scaleUs,micros()-scaleStart,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scaleCalls,1,__ATOMIC_RELAXED);
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
     if(changed)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
@@ -484,7 +507,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 045 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 046 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -568,6 +591,8 @@ void dos_tick(){
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
     uint32_t rasterRows=0,rasterPossible=0;vm->video.prismaRasterStats(rasterRows,rasterPossible);
     Serial.printf("DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
+    uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
+    Serial.printf("DOS SCALE avg_us=%u calls=%u\n",scaleN?scaleTime/scaleN:0,scaleN);
     Serial.printf("DOS DISK reads=%u hits=%u read_us=%u\n",diskReads,diskHits,diskReadUs);diskReads=diskHits=diskReadUs=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
