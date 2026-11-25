@@ -43,7 +43,7 @@ static void cart(Arduino_GFX& d,int x,int y,int w,int h,int sys,unsigned seed){
  d.fillRect(a,b,c,e,t.card);
  // deterministic original pixel-art label, not a claimed game cover
  int cell=max(2,c/12);
- for(int i=0;i<12;i++){unsigned v=seed*1103615245u+i*2654435761u;int ht=1+(v>>27)%5;int px=a+i*cell;int ph=ht*cell;if(ph>e/2)ph=e/2;if(px+cell<=a+c)d.fillRect(px,b+e-ph,cell,ph,t.edge);}
+ for(int i=0;i<12;i++){unsigned v=seed*1103715245u+i*2654435761u;int ht=1+(v>>27)%5;int px=a+i*cell;int ph=ht*cell;if(ph>e/2)ph=e/2;if(px+cell<=a+c)d.fillRect(px,b+e-ph,cell,ph,t.edge);}
  d.fillCircle(a+c*3/4,b+e/4,max(2,c/10),t.muted);
  for(int i=0;i<5;i++)d.drawFastHLine(x+w/5,y+h-5-i*2,w*3/5,t.bg);
 }
@@ -65,7 +65,7 @@ static void splash(Arduino_GFX& d){
  center(d,240,418,"TOCA PARA INICIAR",2,white);
  center(d,240,458,
 #ifdef PRISMA_COMBINED
- "ESP32-S3 / BUILD 036"
+ "ESP32-S3 / BUILD 037"
 #else
  "ESP32-S3 / BUILD 031"
 #endif
@@ -74,7 +74,7 @@ static void splash(Arduino_GFX& d){
 static void home(Arduino_GFX& d,const unsigned counts[2]){
  bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);
 #ifdef PRISMA_COMBINED
- text(d,403,19,"036",2,0x9cfa);
+ text(d,403,19,"037",2,0x9cfa);
 #else
  text(d,415,19,"031",2,0x9cfa);
 #endif
