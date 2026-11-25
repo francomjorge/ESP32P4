@@ -30,8 +30,8 @@ static uint32_t overlayKeys=0;
 static void drawPanel();
 static void setPanel(uint8_t mode);
 static uint32_t serialKeys=0,touchClicks=0;
-static const char *gameNames[]={"Carmen Sandiego","The Incredible Machine","Indiana Jones - Last Crusade","Indiana Jones - Temple of Doom"};
-static const char *gameCmds[]={"carmen","tim","indy3","indy2"};
+static const char *gameNames[]={"Carmen Sandiego","The Secret of Monkey Island"};
+static const char *gameCmds[]={"carmen","monkey"};
 
 static void renderSnapshot();
 class PrismaVideo final : public Faux86::FrameBufferInterface {
@@ -237,10 +237,10 @@ static void loadProgress(uint8_t stage,const char *label){
 static void showLoading(int game){
  host.video.drain();__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);loadStage=0;
  dosLcd->fillScreen(0);centered(game<0?"PRISMA RETRO / DOS":"PRISMA RETRO",28,2,0x9cfa);
- int art=game<0?4:game;
+ int art=game<0?2:game;
  if(DosArt::large[art])dosLcd->draw16bitRGBBitmap(96,82,const_cast<uint16_t*>(DosArt::large[art]),288,180);
  else centered(game<0?"MS-DOS 6.22":"DOS GAME",148,4);
- if(game>=0){centered(game<2?gameNames[game]:"Indiana Jones",280,2);if(game>=2)centered(game==2?"Last Crusade":"Temple of Doom",304,2);}
+ if(game>=0){centered(game==0?"Carmen Sandiego":"The Secret of",280,2);if(game==1)centered("Monkey Island",304,2);}
  loadProgress(10,game<0?"Inicializando DOS":"Preparando juego");
 }
 static void logGuestText(){
@@ -256,31 +256,36 @@ static void openLauncher(){
  benchUntil=0;bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;activeGame=-1;clearText();vm->cpu.prismaMouseEnabled=false;vm->cpu.prismaMousePending=false;directAt=directRelease=0;__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
  dos_key(0);dos_mouse(0,0,false);
  host.video.drain();launcher=true;host.timer.pause();
- dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
- dosLcd->setCursor(16,18);dosLcd->print("PRISMA DOS");
- dosLcd->setTextSize(1);dosLcd->setCursor(16,56);dosLcd->print("Elegi un juego / esquina sup. der.: HOME");
- for(int i=0;i<4;i++){
-  int y=78+i*88;dosLcd->fillRoundRect(12,y,456,74,8,0x2124);
-  dosLcd->drawRoundRect(12,y,456,74,8,0x5e9e);
-  if(DosArt::small[i])dosLcd->draw16bitRGBBitmap(350,y+4,const_cast<uint16_t*>(DosArt::small[i]),112,66);
-  dosLcd->setTextSize(2);dosLcd->setCursor(24,y+16);dosLcd->print(i<2?gameNames[i]:"Indiana Jones");
-  if(i>=2){dosLcd->setCursor(24,y+40);dosLcd->print(i==2?"Last Crusade":"Temple of Doom");}
+ dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);
+ dosLcd->fillRoundRect(12,10,90,44,8,0x2124);dosLcd->drawRoundRect(12,10,90,44,8,0x5e9e);
+ dosLcd->setTextSize(2);dosLcd->setCursor(30,24);dosLcd->print("HOME");
+ dosLcd->setTextSize(3);dosLcd->setCursor(114,10);dosLcd->print("PRISMA DOS");
+ dosLcd->setTextSize(1);dosLcd->setCursor(114,39);dosLcd->print("2 JUEGOS / ESPANOL");
+ for(int i=0;i<2;i++){
+  int y=62+i*184;dosLcd->fillRoundRect(12,y,456,180,8,0x2124);dosLcd->drawRoundRect(12,y,456,180,8,0x5e9e);
+  if(DosArt::small[i])dosLcd->draw16bitRGBBitmap(220,y+15,const_cast<uint16_t*>(DosArt::small[i]),240,150);
+  else{dosLcd->fillRect(220,y+15,240,150,0x0842);dosLcd->setTextSize(1);dosLcd->setCursor(280,y+83);dosLcd->print("SIN PREVIEW");}
+  dosLcd->setTextSize(2);dosLcd->setCursor(24,y+40);dosLcd->print(i==0?"Carmen":"The Secret of");
+  dosLcd->setCursor(24,y+66);dosLcd->print(i==0?"Sandiego":"Monkey Island");
+  dosLcd->setTextSize(1);dosLcd->setCursor(24,y+110);dosLcd->print("MS-DOS / ESPANOL");
+  dosLcd->setTextSize(2);dosLcd->setCursor(24,y+140);dosLcd->print("JUGAR >");
  }
- dosLcd->fillRoundRect(12,432,456,36,6,0x2124);dosLcd->setTextSize(2);dosLcd->setCursor(24,442);dosLcd->print("Consola USB");
+ dosLcd->fillRoundRect(12,436,456,32,6,0x2124);dosLcd->setTextSize(2);dosLcd->setCursor(24,444);dosLcd->print("Consola USB");
  dosLcd->flush(true);Serial.println("DOS TOUCH LAUNCHER");
 }
 bool dos_launcher_touch(unsigned n,int x,int y){
  static bool down=false;static int choice=-1;
  if(!launcher){down=false;choice=-1;return false;}
- if(n==1&&!down){down=true;choice=(x>=12&&x<468&&y>=432&&y<468)?4:(x>=12&&x<468&&y>=78&&y<430&&(y-78)%88<74)?(y-78)/88:-1;}
+ if(n==1&&!down){down=true;choice=(x>=12&&x<102&&y>=10&&y<54)?3:(x>=12&&x<468&&y>=436&&y<468)?4:(x>=12&&x<468&&y>=62&&y<426&&(y-62)%184<180)?(y-62)/184:-1;}
  if(n>1){down=true;choice=-1;}
  if(!n&&down){
   down=false;
+  if(choice==3){Serial.println("DOS MENU HOME");Serial.flush();ESP.restart();}
   if(choice==4){consoleMode=true;activeGame=-1;clearText();__atomic_store_n(&hideGuest,false,__ATOMIC_RELAXED);host.timer.resume();vm->video.updatedscreen=true;launcher=false;host.video.invalidate();setPanel(1);Serial.println("DOS USB CONSOLE");}
-  if(choice>=0&&choice<4){
+  if(choice>=0&&choice<2){
    const char *cmd=gameCmds[choice];Serial.printf("DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
-   activeGame=choice;clearText();vm->cpu.prismaMouseEnabled=choice==0;vm->cpu.prismaMousePending=false;
+   activeGame=choice;clearText();vm->cpu.prismaMouseEnabled=true;vm->cpu.prismaMousePending=false;
    showLoading(choice);loadingGame=true;loadingIndex=choice;loadProgress(35,"Comando enviado");
    mouseMode=choice<2;__atomic_store_n(&panelMode,(uint8_t)(choice<2?0:2),__ATOMIC_RELAXED);host.timer.resume();vm->video.updatedscreen=true;launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
   }
@@ -431,7 +436,7 @@ void dos_touch_game(unsigned n,int x,int y){
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
      else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==1||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==4||activeGame==0)overlayTap(k);
    }else if(finger&&!panelTouch&&!moved&&!drag&&n==0&&millis()-started<350){
-     if(activeGame==0){uint16_t nx,ny;if(!directAt&&!vm->cpu.prismaMouseInCall&&host.video.touchPosition(ox,oy,nx,ny)){vm->cpu.prismaMouseX=nx;vm->cpu.prismaMouseY=ny;directBefore=vm->cpu.prismaMouseApplied;vm->cpu.prismaMousePending=true;directAt=millis();}}
+     if(activeGame==0||activeGame==1){uint16_t nx,ny;if(!directAt&&!vm->cpu.prismaMouseInCall&&host.video.touchPosition(ox,oy,nx,ny)){vm->cpu.prismaMouseX=nx;vm->cpu.prismaMouseY=ny;directBefore=vm->cpu.prismaMouseApplied;vm->cpu.prismaMousePending=true;directAt=millis();}}
      else{dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
    }
    if(drag)dos_mouse(0,0,false);
@@ -454,7 +459,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 042B DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 042D DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
