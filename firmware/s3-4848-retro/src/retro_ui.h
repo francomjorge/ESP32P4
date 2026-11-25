@@ -65,7 +65,7 @@ static void splash(Arduino_GFX& d){
  center(d,240,418,"TOCA PARA INICIAR",2,white);
  center(d,240,458,
 #ifdef PRISMA_COMBINED
- "ESP32-S3 / BUILD 032C"
+ "ESP32-S3 / BUILD 033"
 #else
  "ESP32-S3 / BUILD 031"
 #endif
@@ -74,7 +74,7 @@ static void splash(Arduino_GFX& d){
 static void home(Arduino_GFX& d,const unsigned counts[2]){
  bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);
 #ifdef PRISMA_COMBINED
- text(d,403,19,"032C",2,0x9cfa);
+ text(d,403,19,"033",2,0x9cfa);
 #else
  text(d,415,19,"031",2,0x9cfa);
 #endif
