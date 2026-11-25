@@ -298,6 +298,14 @@ void loop(){
   pollTouch();
 #ifdef PRISMA_COMBINED
   if(dosActive){
+    // A single finger held at the top-right corner always returns to PRISMA.
+    static uint32_t homeSince=0;
+    if(npoints==1&&points[0].x>=424&&points[0].y<56){
+      if(!homeSince)homeSince=millis();
+      if(millis()-homeSince>=900){Serial.println("DOS HOME escape");ESP.restart();}
+      dos_key(0);dos_mouse(0,0,false);dos_tick();return;
+    }
+    homeSince=0;
     static uint32_t exitSince=0; static bool prev=false; static Point last{};
     if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200)ESP.restart();dos_key(0);dos_mouse(0,0,false);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
     if(exitSince){exitSince=0;dos_show_launcher();}
