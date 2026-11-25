@@ -7,7 +7,7 @@
 #include <vector>
 #include "gb_core.h"
 #ifdef PRISMA_COMBINED
-bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher(); void dos_touch_game(unsigned,int,int);
+bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher(); bool dos_in_launcher(); void dos_request_exit(); void dos_touch_game(unsigned,int,int);
 static bool dosActive=false;
 #endif
 #include "builtin_roms.h"
@@ -305,7 +305,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 039 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 040 RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -337,15 +337,15 @@ void loop(){
     static uint32_t touchStats=0;
     if(millis()-touchStats>=3000){touchStats=millis();Serial.printf("DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
     // A single finger held at the top-right corner always returns to PRISMA.
-    static uint32_t homeSince=0;
+    static uint32_t homeSince=0;static bool exitSent=false;
     if(npoints==1&&points[0].x>=424&&points[0].y<56){
       if(!homeSince)homeSince=millis();
-      if(millis()-homeSince>=900){Serial.println("DOS RESET REQUEST: corner HOME");Serial.flush();ESP.restart();}
+      if(millis()-homeSince>=900&&!exitSent){exitSent=true;if(dos_in_launcher()){Serial.println("DOS RESET REQUEST: selector HOME");Serial.flush();ESP.restart();}else dos_request_exit();}
       dos_touch_game(2,0,0);dos_tick();return;
     }
-    homeSince=0;
+    homeSince=0;exitSent=false;
     static uint32_t exitSince=0; static bool prev=false; static Point last{};
-    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200){Serial.println("DOS RESET REQUEST: two fingers");Serial.flush();ESP.restart();}dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
+    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>3000){Serial.println("DOS RESET REQUEST: emergency HOME");Serial.flush();ESP.restart();}dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;}
     if(exitSince){exitSince=0;dos_show_launcher();}
     if(dos_launcher_touch(npoints,npoints?points[0].x:0,npoints?points[0].y:0)){prev=false;dos_tick();return;}
     dos_touch_game(npoints,npoints?points[0].x:0,npoints?points[0].y:0);dos_tick();return;
