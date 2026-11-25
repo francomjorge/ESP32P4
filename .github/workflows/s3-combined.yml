@@ -598,6 +598,84 @@ jobs:
               assert src[start:].count(old)==1
               src=src[:start]+src[start:].replace(old,"prismaScaleDirtyValid=true;\n              "+old+"\n              prismaScaleDirtyValid=false;",1)
           p.write_text(src)
+          # 048: CPU hot path. Keep the existing guest instruction semantics.
+          p=path("CPU.cpp","prismaDeadline")
+          src=p.read_text()
+          old="  for (loopcount = 0; loopcount < execloops; loopcount++)"
+          assert src.count(old)==1
+          src=src.replace(old,"  uint32_t nextTiming=0;\n"+old,1)
+          old="if ((loopcount & timing_interval) == 0) {"
+          assert src.count(old)==1
+          src=src.replace(old,"if (loopcount >= nextTiming) {\n      nextTiming=loopcount+uint32_t(timing_interval)+1;",1)
+          old="vm.pic.irqpending()"
+          assert src.count(old)>=1
+          src=src.replace(old,"((vm.pic.irr & (~vm.pic.imr)) != 0)")
+          # Address generation: original mode 0 direct address and modes
+          # 1/2 displacements share a single base-register decode.
+          start=src.index("FUNC_INLINE void CPU::getea(uint8_t rmval)")
+          end=src.index("FUNC_INLINE void CPU::push(",start)
+          src=src[:start]+"""
+          FUNC_INLINE void CPU::getea(uint8_t rmval)
+          {
+            uint32_t a=0;
+            if(mode<=2){
+              switch(rmval){
+                case 0:a=regs.wordregs[regbx]+regs.wordregs[regsi];break;
+                case 1:a=regs.wordregs[regbx]+regs.wordregs[regdi];break;
+                case 2:a=regs.wordregs[regbp]+regs.wordregs[regsi];break;
+                case 3:a=regs.wordregs[regbp]+regs.wordregs[regdi];break;
+                case 4:a=regs.wordregs[regsi];break;
+                case 5:a=regs.wordregs[regdi];break;
+                case 6:a=mode?regs.wordregs[regbp]:disp16;break;
+                case 7:a=regs.wordregs[regbx];break;
+              }
+              if(mode && rmval<8)a+=disp16;
+            }
+            ea=(a&0xffff)+(useseg<<4);
+          }
+          """+src[end:]
+          # Fast REP MOVS/STOS for forward, non-overlapping conventional RAM.
+          # Do not cross a timer checkpoint, segment boundary or a CPU slice;
+          # do not batch when trapping, with a pending IRQ, or self-modifying.
+          for op,sz,mov in (("A4",1,True),("A5",2,True),("AA",1,False),("AB",2,False)):
+              import re
+              pattern=r"case 0x"+op+r": /\*[^\n]*\*/"
+              matches=list(re.finditer(pattern,src))
+              assert len(matches)==1,(op,len(matches))
+              i=matches[0].end()
+              snippet="""
+          #ifndef CPU_ADDR_MODE_CACHE
+                if(reptype && didbootstrap && !df && !tf && !trap_toggle &&
+                   !(ifl && (vm.pic.irr & (~vm.pic.imr))) &&
+                   regs.wordregs[regcx]>=2 && firstip<ip && ip<=0xfff0){
+                  const unsigned unit=UNIT;
+                  unsigned n=regs.wordregs[regcx];
+                  if(n>32)n=32;
+                  unsigned room=(nextTiming-loopcount)/2;
+                  if(n>room)n=room;
+                  room=(execloops-loopcount)/2;
+                  if(n>room)n=room;
+                  const unsigned di=regs.wordregs[regdi],si=regs.wordregs[regsi];
+                  const unsigned dst=segbase(segregs[reges])+di,srcaddr=segbase(useseg)+si;
+                  const unsigned codeStart=segbase(segregs[regcs])+firstip,codeEnd=segbase(segregs[regcs])+ip;
+                  const unsigned bytes=n*unit;
+                  if(n>=2 && di+bytes<=65536 && dst+bytes<=0xa0000 &&
+                     codeEnd<=0x100000 && (dst+bytes<=codeStart || dst>=codeEnd) MOVGUARD){
+                    BODY
+                    regs.wordregs[regdi]=di+bytes;
+                    SIUPDATE
+                    regs.wordregs[regcx]-=n;
+                    totalexec+=2*n-1;loopcount+=2*n-1;ip=firstip;
+                    break;
+                  }
+                }
+          #endif
+          """
+              snippet=snippet.replace("UNIT",str(sz)).replace("MOVGUARD","&& si+bytes<=65536 && srcaddr+bytes<=0xa0000 && (dst+bytes<=srcaddr || srcaddr+bytes<=dst)" if mov else "")
+              body="memcpy(vm.memory.RAM+dst,vm.memory.RAM+srcaddr,bytes);" if mov else ("memset(vm.memory.RAM+dst,regs.byteregs[regal],bytes);" if sz==1 else "uint8_t *out=vm.memory.RAM+dst;const uint16_t v=regs.wordregs[regax];for(unsigned k=0;k<bytes;k+=2){out[k]=uint8_t(v);out[k+1]=uint8_t(v>>8);}")
+              snippet=snippet.replace("BODY",body).replace("SIUPDATE","regs.wordregs[regsi]=si+bytes;" if mov else "")
+              src=src[:i]+snippet+src[i:]
+          p.write_text(src)
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
