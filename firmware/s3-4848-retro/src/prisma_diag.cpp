@@ -39,7 +39,7 @@ static void exportLog(bool perf){
 static void runCommand(){
  if(overflow){Serial.println("PRISMA ERR command too long");return;}
  line[used]=0;
- if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :cursor base/right/left/down/up/list/stop ; :: sends literal colon");
+ if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :cursor auto/base/right/left/down/up/list/stop ; :: sends literal colon");
  else if(!strcmp(line,"status"))prisma_diag_status();
  else if(!strcmp(line,"perf"))exportLog(true);
  else if(!strcmp(line,"log"))exportLog(false);
@@ -58,7 +58,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 059R reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 059R2 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);
