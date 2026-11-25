@@ -1,4 +1,4 @@
-name: S3 Retro - build 052S combined
+name: S3 Retro - build 053 combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -732,7 +732,14 @@ jobs:
           src=src.replace(old,"""#ifndef CPU_ADDR_MODE_CACHE
           void IRAM_ATTR __attribute__((noinline,noclone)) CPU::prismaDecodeModrm()
           {
-            modregrm();
+            addrbyte=getmem8(segregs[regcs],ip);StepIP(1);
+            mode=addrbyte>>6;reg=(addrbyte>>3)&7;rm=addrbyte&7;
+            // Register-only operands are independent of segment selection.
+            if(mode==3){disp8=0;disp16=0;return;}
+            // Preserve original displacement and stack-segment semantics.
+            if(mode==1){disp16=signext(getmem8(segregs[regcs],ip));StepIP(1);}
+            else if(mode==2||rm==6){disp16=getmem16(segregs[regcs],ip);StepIP(2);}
+            if(!segoverride&&(rm==2||rm==3||(rm==6&&mode!=0)))useseg=segregs[regss];
           }
           #undef modregrm
           #define modregrm() prismaDecodeModrm()
@@ -843,6 +850,41 @@ jobs:
           Path("src/dos_art.h").write_text("\n".join(out)+"\n")
           PY
       - run: pio run -e esp32-4848s040-combined
+      - name: Test ModRM decode equivalence
+        run: |
+          python - <<'PY'
+          # Compare the original switch-based decoder with the compact path.
+          # Track segment selection, displacement state and consumed bytes.
+          def original(b,d,disp8,disp16,override):
+              mode,reg,rm=b>>6,(b>>3)&7,b&7
+              ss=False;consumed=1
+              if mode==0:
+                  if rm==6: disp16=d;consumed+=2
+                  if rm in (2,3) and not override: ss=True
+              elif mode in (1,2):
+                  if mode==1:
+                      v=d&255;disp16=(v if v<128 else v-256)&65535;consumed+=1
+                  else: disp16=d;consumed+=2
+                  if rm in (2,3,6) and not override: ss=True
+              else: disp8=disp16=0
+              return mode,reg,rm,disp8,disp16,ss,consumed
+          def compact(b,d,disp8,disp16,override):
+              mode,reg,rm=b>>6,(b>>3)&7,b&7
+              ss=False;consumed=1
+              if mode==3:return mode,reg,rm,0,0,ss,consumed
+              if mode==1:
+                  v=d&255;disp16=(v if v<128 else v-256)&65535;consumed+=1
+              elif mode==2 or rm==6: disp16=d;consumed+=2
+              if not override and (rm in (2,3) or (rm==6 and mode!=0)):ss=True
+              return mode,reg,rm,disp8,disp16,ss,consumed
+          n=0
+          for b in range(256):
+              for d in list(range(256))+[0x100,0x7fff,0x8000,0xff00,0xffff]:
+                  for override in (False,True):
+                      assert original(b,d,0x5a,0xabcd,override)==compact(b,d,0x5a,0xabcd,override)
+                      n+=1
+          print("PRISMA 053 ModRM equivalence:",n,"cases")
+          PY
       - name: Verify bounded CPU IRAM placement
         run: |
           set -eu
@@ -865,13 +907,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-052S-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-052S-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-052S.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-053-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-053-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-053.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-052S-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-053-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -880,6 +922,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-052S
+          name: PRISMA-RETRO-S3-053
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
