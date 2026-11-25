@@ -83,7 +83,7 @@ static void splash(Arduino_GFX& d){
 static void home(Arduino_GFX& d,const unsigned counts[2]){
  bg(d,-1);text(d,20,16,"PRISMA RETRO",3,0xffff);
 #ifdef PRISMA_COMBINED
- text(d,403,19,059,2,0x9cfa);
+ text(d,403,19,"059",2,0x9cfa);
 #else
  text(d,415,19,"031",2,0x9cfa);
 #endif
