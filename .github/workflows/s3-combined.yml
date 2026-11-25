@@ -403,6 +403,40 @@ jobs:
               }
             }else prismaSnapshotUpdate(0,0,s.w-1,s.h-1);""")
           p.write_text(src)
+          # Report raster work from the same worker that owns the RGB framebuffer.
+          p=path("Video.cpp","prismaCapture()")
+          src=p.read_text()
+          old="static bool prismaFullRender=true,prismaForceNext=true;"
+          assert src.count(old)==1
+          src=src.replace(old,old+"""
+          static uint32_t prismaRows=0,prismaRowsPossible=0;
+          void Video::prismaRasterStats(uint32_t &rows,uint32_t &possible){
+            rows=__atomic_exchange_n(&prismaRows,0,__ATOMIC_RELAXED);
+            possible=__atomic_exchange_n(&prismaRowsPossible,0,__ATOMIC_RELAXED);
+          }
+          """)
+          # Count rows at the actual drawing entry, excluding the original sync renderer.
+          old="static void prismaSnapshotUpdate("
+          start=src.index(old)
+          brace=src.index("{",start)
+          src=src[:brace+1]+"\n  __atomic_fetch_add(&prismaRows,end_y-start_y+1,__ATOMIC_RELAXED);\n"+src[brace+1:]
+          old="if(!prismaFullRender&&!prismaCgaDirty(addr))continue;"
+          assert src.count(old)==1
+          src=src.replace(old,old+"\n                ++prismaCgaRows;")
+          start=src.index("void Video::prismaRenderSnapshot()")
+          i=src.index("for(unsigned y=0;y<200;y++){",start)
+          src=src[:i]+"unsigned prismaCgaRows=0;\n              "+src[i:]
+          old="vm.renderer.draw(vga_framebuffer,width,200,VGA_FRAMEBUFFER_STRIDE);"
+          assert src.count(old)==2
+          start=src.index("void Video::prismaRenderSnapshot()")
+          i=src.index(old,start)
+          src=src[:i]+"__atomic_fetch_add(&prismaRows,prismaCgaRows,__ATOMIC_RELAXED);\n              __atomic_fetch_add(&prismaRowsPossible,200,__ATOMIC_RELAXED);\n              "+src[i:]
+          old="vm.renderer.draw(vga_framebuffer,s.w,s.h,VGA_FRAMEBUFFER_STRIDE);"
+          assert src.count(old)==1
+          src=src.replace(old,"__atomic_fetch_add(&prismaRowsPossible,s.h,__ATOMIC_RELAXED);\n            "+old)
+          p.write_text(src)
+          p=path("Video.h","prismaCaptureBytes()")
+          edit(p,[("    uint32_t prismaCaptureBytes();","    uint32_t prismaCaptureBytes();\n    void prismaRasterStats(uint32_t &rows,uint32_t &possible);")])
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
