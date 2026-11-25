@@ -1,4 +1,4 @@
-name: S3 Retro - build 042E combined
+name: S3 Retro - build 043 combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -438,6 +438,49 @@ jobs:
           p.write_text(src)
           p=path("Video.h","prismaCaptureBytes()")
           edit(p,[("    uint32_t prismaCaptureBytes();","    uint32_t prismaCaptureBytes();\n    void prismaRasterStats(uint32_t &rows,uint32_t &possible);")])
+          # 043: VGA 8bpp only. Expand four consecutive pixels from the
+          # four planes into an internal RAM row, then copy each repeated
+          # scanline sequentially to PSRAM. Preserve all existing timings,
+          # addressing, palette, framebuffer dimensions and dirty decisions.
+          p=path("Video.cpp","prismaSnapshotUpdate(")
+          src=p.read_text()
+          start=src.index("static void prismaSnapshotUpdate(")
+          end=src.index("void Video::prismaRenderSnapshot()",start)
+          raster=src[start:end]
+          old="case VGA_MODE_GRAPHICS_8BPP:"
+          assert raster.count(old)==1,("043 snapshot VGA8 case",raster.count(old))
+          raster=raster.replace(old,old+"""
+            if(start_x==0 && end_x+1==vga_w && xscanpixels==2 && (vga_w&7)==0 &&
+               yscanpixels && start_y%yscanpixels==0 && (end_y-start_y+1)%yscanpixels==0 &&
+               end_y<vga_h && vga_w<=VGA_FRAMEBUFFER_WIDTH && vga_h<=VGA_FRAMEBUFFER_HEIGHT){
+              static uint16_t *line=nullptr;
+              static bool tried=false;
+              if(!tried){
+                tried=true;
+                line=(uint16_t*)heap_caps_malloc(VGA_FRAMEBUFFER_WIDTH*sizeof(uint16_t),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+              }
+              if(line){
+                for(unsigned sy=start_y;sy<=end_y;sy+=yscanpixels){
+                  unsigned a=((sy/yscanpixels)*xstride)&65535;
+                  uint16_t *out=line;
+                  for(unsigned x=0;x<xstride;x+=4){
+                    unsigned offset=((a>>2)+startaddr)&65535;
+                    const uint16_t c0=vgaColor[vga_RAM[0][offset]];
+                    const uint16_t c1=vgaColor[vga_RAM[1][offset]];
+                    const uint16_t c2=vgaColor[vga_RAM[2][offset]];
+                    const uint16_t c3=vgaColor[vga_RAM[3][offset]];
+                    out[0]=out[1]=c0;out[2]=out[3]=c1;out[4]=out[5]=c2;out[6]=out[7]=c3;
+                    out+=8;a=(a+4)&65535;
+                  }
+                  for(unsigned yy=0;yy<yscanpixels;yy++)
+                    memcpy(vga_framebuffer+(sy+yy)*VGA_FRAMEBUFFER_WIDTH,line,vga_w*sizeof(uint16_t));
+                }
+                break;
+              }
+            }
+          """,1)
+          src=src[:start]+raster+src[end:]
+          p.write_text(src)
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
@@ -545,13 +588,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-042E-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-042E-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-042E.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-043-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-043-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-043.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-042E-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-043-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -560,6 +603,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-042E
+          name: PRISMA-RETRO-S3-043
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
