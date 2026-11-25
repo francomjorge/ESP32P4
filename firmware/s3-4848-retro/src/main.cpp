@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <Wire.h>
+#ifdef PRISMA_COMBINED
+#include <freertos/queue.h>
+#endif
 #include <vector>
 #include "gb_core.h"
 #ifdef PRISMA_COMBINED
@@ -126,6 +129,30 @@ static void pollTouch(){
   }
   clearTouch();
 }
+#ifdef PRISMA_COMBINED
+struct DosTouchSample {uint8_t n;Point p;};
+static QueueHandle_t dosTouchQueue=nullptr;
+static DosTouchSample dosTouchCurrent{};
+static uint32_t dosTouchDrops=0;
+static void dosTouchWorker(void*){
+  DosTouchSample previous{255,{0,0}};
+  uint32_t sentAt=0;
+  for(;;){
+    pollTouch();
+    DosTouchSample sample{npoints,npoints?points[0]:Point{}};
+    if(sample.n!=previous.n||sample.p.x!=previous.p.x||sample.p.y!=previous.p.y||millis()-sentAt>=40){
+      if(xQueueSend(dosTouchQueue,&sample,pdMS_TO_TICKS(5))==pdTRUE){previous=sample;sentAt=millis();}
+      else __atomic_fetch_add(&dosTouchDrops,1,__ATOMIC_RELAXED);
+    }
+    vTaskDelay(pdMS_TO_TICKS(8));
+  }
+}
+static void startDosTouch(){
+  dosTouchQueue=xQueueCreate(32,sizeof(DosTouchSample));
+  if(dosTouchQueue&&xTaskCreatePinnedToCore(dosTouchWorker,"dosTouch",3072,nullptr,4,nullptr,0)!=pdPASS){vQueueDelete(dosTouchQueue);dosTouchQueue=nullptr;}
+  Serial.printf("DOS TOUCH worker=%s\n",dosTouchQueue?"core0":"sync");
+}
+#endif
 static void textAt(int x,int y,const String &s,uint8_t size=2,uint16_t color=FG){
   lcd.setTextColor(color);lcd.setTextSize(size);lcd.setCursor(x,y);lcd.print(s);
 }
@@ -278,7 +305,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 037 RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 038 RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -302,9 +329,13 @@ void loop(){
   const uint32_t tickStart=micros();
   if(!addr){delay(100);return;}
   if(playing)markPhase(1);
-  pollTouch();
-#ifdef PRISMA_COMBINED
+  #ifdef PRISMA_COMBINED
   if(dosActive){
+    if(dosTouchQueue){xQueueReceive(dosTouchQueue,&dosTouchCurrent,0);}else{pollTouch();dosTouchCurrent={npoints,npoints?points[0]:Point{}};}
+    const unsigned npoints=dosTouchCurrent.n;
+    const Point points[1]={dosTouchCurrent.p};
+    static uint32_t touchStats=0;
+    if(millis()-touchStats>=3000){touchStats=millis();Serial.printf("DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
     // A single finger held at the top-right corner always returns to PRISMA.
     static uint32_t homeSince=0;
     if(npoints==1&&points[0].x>=424&&points[0].y<56){
@@ -320,6 +351,7 @@ void loop(){
     dos_touch_game(npoints,npoints?points[0].x:0,npoints?points[0].y:0);dos_tick();return;
   }
 #endif
+  pollTouch();
   if(splashVisible){
     if(npoints)splashPressed=true;
     else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 031 home begin");homeUI();Serial.println("BOOT 031 home ok");}
@@ -335,6 +367,7 @@ void loop(){
         AsyncVideo::drain();menuCanvas.release();
         dosActive=dos_start(lcd);
         if(!dosActive){Serial.println("DOS RESET REQUEST: init failed");Serial.flush();delay(1500);ESP.restart();}
+        else startDosTouch();
         wasDown=false;return;
       }
 #endif
