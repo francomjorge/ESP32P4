@@ -1,4 +1,4 @@
-name: S3 Retro - build 053K combined
+name: S3 Retro - build 054 combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -720,6 +720,83 @@ jobs:
               }else{vm.memory.RAM[a]=uint8_t(v);vm.memory.RAM[a+1]=uint8_t(v>>8);}
               return;""",1)
           p.write_text(src)
+          # 054: preserve exact existing x86 flag semantics, including the
+          # original SBB wrap. Move only the 256-byte parity table to DRAM
+          # and express single-bit flags as shifts rather than branches.
+          p=path("CPU.cpp","prismaDeadline")
+          src=p.read_text()
+          import re
+          a=src.index("FUNC_INLINE void CPU::flag_szp8(")
+          b=src.index("FUNC_INLINE void CPU::op_adc8(",a)
+          before=src[a:b]
+          after=before
+          def bitflag(m):
+              cond,flag=m.group(1),m.group(2)
+              if flag=="zf":return "  zf = !value;"
+              if flag=="sf":return "  sf = value >> "+("15" if "0x8000" in cond else "7")+";"
+              if flag=="af":return "  af = ((v1 ^ v2 ^ dst) >> 4) & 1;"
+              if flag=="of":
+                  expr="((dst ^ v1) & (dst ^ v2))" if "(dst ^ v2)" in cond else "((dst ^ v1) & (v1 ^ v2))"
+                  return "  of = ("+expr+" >> "+("15" if "0x8000" in cond else "7")+") & 1;"
+              if flag=="cf":return "  cf = ("+cond+") != 0;"
+              raise AssertionError(flag)
+          pat=r"  if \(([^\n]+)\)\n  \{\n    (zf|sf|pf|cf|of|af) = 1;[^\n]*\n  \}\n  else\n  \{\n    \2 = 0;[^\n]*\n  \}"
+          after,n=re.subn(pat,bitflag,after)
+          assert n==28,n
+          # Native differential test of the actual extracted implementation.
+          # Do not infer an independent reference from the new formulas.
+          parity=re.search(r"static const uint8_t parity\[0x100\] = \{.*?\};",src,re.S).group(0)
+          def model(name,body):
+              import re
+              body=body.replace("FUNC_INLINE void CPU::","void ")
+              # Define methods inline in the reference class.
+              return "struct "+name+" { uint8_t zf=0,sf=0,pf=0,cf=0,of=0,af=0;\n"+body+"\n};\n"
+          test=r'''
+          #include <cstdint>
+          #include <cstdio>
+          #include <cstdlib>
+          #include <random>
+          '''
+          test+=parity+"\n"+model("Old",before)+model("New",after)
+          test+=r'''
+          static uint32_t checks=0;
+          static void eq(const Old& o,const New& n){
+              if(o.zf!=n.zf||o.sf!=n.sf||o.pf!=n.pf||o.cf!=n.cf||o.of!=n.of||o.af!=n.af)std::abort();
+              ++checks;
+          }
+          #define TEST(fn,...) do { Old o; New n; o.fn(__VA_ARGS__); n.fn(__VA_ARGS__); eq(o,n); } while(0)
+          int main(){
+              for(unsigned x=0;x<65536;++x){TEST(flag_szp16,x);TEST(flag_log16,x);}
+              for(unsigned x=0;x<256;++x){
+                TEST(flag_szp8,x);TEST(flag_log8,x);
+                for(unsigned y=0;y<256;++y){
+                  TEST(flag_add8,x,y);TEST(flag_sub8,x,y);
+                  for(unsigned c=0;c<2;++c){TEST(flag_adc8,x,y,c);TEST(flag_sbb8,x,y,c);}
+                }
+              }
+              std::mt19937 rng(54);
+              for(unsigned i=0;i<1000000;++i){
+                uint16_t x=rng(),y=rng();TEST(flag_add16,x,y);TEST(flag_sub16,x,y);
+                for(unsigned c=0;c<2;++c){TEST(flag_adc16,x,y,c);TEST(flag_sbb16,x,y,c);}
+              }
+              for(unsigned x: {0u,1u,0xfu,0x10u,0x7fffu,0x8000u,0xffffu})
+                for(unsigned y: {0u,1u,0xfu,0x10u,0x7fffu,0x8000u,0xffffu}){
+                  TEST(flag_add16,x,y);TEST(flag_sub16,x,y);
+                  for(unsigned c=0;c<2;++c){TEST(flag_adc16,x,y,c);TEST(flag_sbb16,x,y,c);}
+                }
+              std::printf("PRISMA 054 flags equivalent: %u checks\n",checks);
+          }
+          '''
+          from pathlib import Path
+          import subprocess
+          Path("/tmp/prisma054-flags.cpp").write_text(test)
+          subprocess.run(["g++","-O2","-std=c++17","/tmp/prisma054-flags.cpp","-o","/tmp/prisma054-flags"],check=True)
+          subprocess.run(["/tmp/prisma054-flags"],check=True)
+          src=src[:a]+after+src[b:]
+          old="static const uint8_t parity[0x100]"
+          assert src.count(old)==1
+          src=src.replace(old,"static DRAM_ATTR const uint8_t parity[0x100]",1)
+          p.write_text(src)
           # 050: bounded IRAM experiment. Move only the original ModR/M
           # decoder into one non-inlined function; avoid moving the giant
           # exec86 dispatcher or allocating any additional guest RAM.
@@ -907,13 +984,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-053K-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-053K-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-053K.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-054-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-054-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-054.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-053K-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-054-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -922,6 +999,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-053K
+          name: PRISMA-RETRO-S3-054
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
