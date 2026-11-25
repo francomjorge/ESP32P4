@@ -48,7 +48,7 @@ public:
  uint64_t getSize() override {return len;}
  uint64_t seek(uint64_t offset) override {pos=offset>len?len:offset;return pos;}
  int read(uint8_t *buf,unsigned count) override {
-   if(!isValid())return 0; count=min(count,len-pos);
+   if(!isValid())return 0; count=static_cast<unsigned>(min<uint32_t>(static_cast<uint32_t>(count),len-pos));
    if(esp_partition_read(part,base+pos,buf,count)!=ESP_OK)return 0;pos+=count;return count;
  }
  int write(const uint8_t *,unsigned) override {return 0;}
