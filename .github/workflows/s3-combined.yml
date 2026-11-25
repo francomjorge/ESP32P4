@@ -1,4 +1,4 @@
-name: S3 Retro - build 040B combined
+name: S3 Retro - build 040C combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -324,7 +324,66 @@ jobs:
           p.write_text(src)
           p=path("Video.h","prismaCapture()")
           edit(p,[("    bool prismaCapture();","    bool prismaCapture();\n    uint32_t prismaCaptureBytes();")])
-          print("Faux86 040 patches applied")
+          # Pace physical keyboard scancodes after actual guest port reads.
+          p=path("InputManager.h","prismaReadCount")
+          edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
+          p=path("InputManager.cpp","void InputManager::tick")
+          edit(p,[
+              ("  if (!keyboardWaitAck && keyboardBufferSize > 0)","  if (!keyboardWaitAck && keyboardBufferSize > 0 && !(vm.pic.isr & 2) && int32_t(uint32_t(esp_timer_get_time())-prismaNextKeyUs)>=0)"),
+              ("    keyboardWaitAck = true;","    keyboardWaitAck = true;\n    prismaNextKeyUs=uint32_t(esp_timer_get_time())+5000;\n    ++prismaSentCount;"),
+          ])
+          p.write_text('#include <esp_timer.h>\n'+p.read_text())
+          # For direct taps, ask the installed DOS mouse driver to position
+          # its own cursor, then replay the original INT 33h query. Only
+          # active on an explicit touch request, never an extra CPU loop.
+          p=path("CPU.h","uint8_t didbootstrap")
+          edit(p,[("    uint8_t didbootstrap = 0;","""    uint8_t didbootstrap = 0;
+              bool prismaMouseEnabled=false,prismaMousePending=false,prismaMouseInCall=false;
+              uint16_t prismaMouseX=0,prismaMouseY=0;
+              uint32_t prismaMouseApplied=0,prismaMouseQueries=0;
+              uint16_t prismaMouseMinX=0,prismaMouseMaxX=639,prismaMouseMinY=0,prismaMouseMaxY=199;
+              bool prismaMouseRangeY=false;
+              uint16_t prismaMouseSavedRegs[8],prismaMouseSavedES,prismaMouseSavedDS,prismaMouseSavedSS,prismaMouseSavedCS,prismaMouseSavedIP,prismaMouseSavedFlags;
+              void prismaMouseReturn();""")])
+          p=path("CPU.cpp","prismaDeadline")
+          edit(p,[
+              ("void CPU::intcall86(uint8_t intnum)\n{","""void CPU::prismaMouseReturn(){
+                if(!prismaMouseInCall || segregs[regcs]!=prismaMouseSavedCS || ip!=prismaMouseSavedIP ||
+                   segregs[regss]!=prismaMouseSavedSS || regs.wordregs[regsp]!=prismaMouseSavedRegs[regsp]) return;
+                for(unsigned i=0;i<8;i++)regs.wordregs[i]=prismaMouseSavedRegs[i];
+                segregs[reges]=prismaMouseSavedES;segregs[regds]=prismaMouseSavedDS;
+                decodeflagsword(prismaMouseSavedFlags);
+                prismaMouseInCall=false;prismaMousePending=false;++prismaMouseApplied;
+                intcall86(0x33);
+              }
+              void CPU::intcall86(uint8_t intnum)
+              {
+                if(intnum==0x33 && prismaMouseEnabled && !prismaMouseInCall){
+                  const uint16_t fn=regs.wordregs[regax];
+                  if(fn==0 || fn==0x21){prismaMouseMinX=prismaMouseMinY=0;prismaMouseMaxX=639;prismaMouseMaxY=199;prismaMouseRangeY=false;}
+                  if(fn==7){prismaMouseMinX=regs.wordregs[regcx];prismaMouseMaxX=regs.wordregs[regdx];}
+                  if(fn==8){prismaMouseMinY=regs.wordregs[regcx];prismaMouseMaxY=regs.wordregs[regdx];prismaMouseRangeY=true;}
+                  if(fn==3||fn==5||fn==6){
+                    ++prismaMouseQueries;
+                    if(prismaMousePending && (getmem16(0,0xcc)||getmem16(0,0xce))){
+                      for(unsigned i=0;i<8;i++)prismaMouseSavedRegs[i]=regs.wordregs[i];
+                      prismaMouseSavedES=segregs[reges];prismaMouseSavedDS=segregs[regds];
+                      prismaMouseSavedSS=segregs[regss];prismaMouseSavedCS=segregs[regcs];prismaMouseSavedIP=ip;prismaMouseSavedFlags=makeflagsword();
+                      unsigned maxY=prismaMouseMaxY;
+                      if(!prismaMouseRangeY){unsigned m=vm.memory.readByte(0x449)&0x7f;if(m==0x10||m==0x0f)maxY=349;else if(m==0x11||m==0x12)maxY=479;}
+                      unsigned minX=prismaMouseMinX,maxX=prismaMouseMaxX,minY=prismaMouseMinY;
+                      if(maxX<minX)maxX=minX;if(maxY<minY)maxY=minY;
+                      regs.wordregs[regax]=4;
+                      regs.wordregs[regcx]=minX+(uint32_t(prismaMouseX)*(maxX-minX))/65535;
+                      regs.wordregs[regdx]=minY+(uint32_t(prismaMouseY)*(maxY-minY))/65535;
+                      prismaMouseInCall=true;
+                    }
+                  }
+                }"""),
+              ("      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
+              ("      decodeflagsword(pop());\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","      decodeflagsword(pop());\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
+          ])
+          print("Faux86 040C input patches applied")
           PY
       - name: Prepare DOS preview art
         run: |
@@ -374,13 +433,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-040B-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-040B-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-040B.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-040C-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-040C-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-040C.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-040B-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-040C-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -389,6 +448,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-040B
+          name: PRISMA-RETRO-S3-040C
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
