@@ -1,4 +1,4 @@
-name: S3 Retro - build 049 combined
+name: S3 Retro - build 050 combined
 on:
   push:
     branches: [build-032-dos-nes]
@@ -676,6 +676,26 @@ jobs:
               snippet=snippet.replace("BODY",body).replace("SIUPDATE","regs.wordregs[regsi]=si+bytes;" if mov else "")
               src=src[:i]+snippet+src[i:]
           p.write_text('#include <string.h>\n'+src)
+          # 050: bounded IRAM experiment. Move only the original ModR/M
+          # decoder into one non-inlined function; avoid moving the giant
+          # exec86 dispatcher or allocating any additional guest RAM.
+          p=path("CPU.h","void exec86(uint32_t execloops")
+          edit(p,[("    void exec86(uint32_t execloops, uint16_t timing_interval);","    void exec86(uint32_t execloops, uint16_t timing_interval);\n    void prismaDecodeModrm();")])
+          p=path("CPU.cpp","prismaDeadline")
+          src=p.read_text()
+          old="void CPU::exec86(uint32_t execloops, uint16_t timing_interval)"
+          assert src.count(old)==1
+          src=src.replace(old,"""#ifndef CPU_ADDR_MODE_CACHE
+          void IRAM_ATTR __attribute__((noinline,noclone)) CPU::prismaDecodeModrm()
+          {
+            modregrm();
+          }
+          #undef modregrm
+          #define modregrm() prismaDecodeModrm()
+          #endif
+
+          """+old,1)
+          p.write_text('#include <esp_attr.h>\n'+src)
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
@@ -778,18 +798,35 @@ jobs:
           Path("src/dos_art.h").write_text("\n".join(out)+"\n")
           PY
       - run: pio run -e esp32-4848s040-combined
+      - name: Verify bounded CPU IRAM placement
+        run: |
+          set -eu
+          OBJDUMP=$(find "$HOME/.platformio/packages" -name 'xtensa-esp32s3-elf-objdump' -type f | head -n 1)
+          test -n "$OBJDUMP"
+          "$OBJDUMP" -t -C .pio/build/esp32-4848s040-combined/firmware.elf | grep 'CPU::prismaDecodeModrm()' > /tmp/prisma-iram-symbol.txt
+          cat /tmp/prisma-iram-symbol.txt
+          python - <<'PY'
+          from pathlib import Path
+          lines=Path("/tmp/prisma-iram-symbol.txt").read_text().splitlines()
+          assert len(lines)==1,lines
+          fields=lines[0].split()
+          section=next(x for x in fields if x.startswith(".iram"))
+          size=int(fields[fields.index(section)+1],16)
+          assert 0<size<=2048,(section,size)
+          print("PRISMA IRAM decoder verified:",section,size,"bytes")
+          PY
       - name: Merge factory image
         run: |
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-049-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-049-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-049.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-050-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-050-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-050.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-049-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-050-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -798,6 +835,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-049
+          name: PRISMA-RETRO-S3-050
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
