@@ -514,7 +514,7 @@ static const PanelKey pad[]={
  PK("4",5,8,39,36,36),PK("5",6,44,39,36,36),PK("6",7,80,39,36,36),
  PK("1",2,8,75,36,36),PK("2",3,44,75,36,36),PK("3",4,80,75,36,36),PK("0",11,116,75,36,36),
  PK("^",72,208,3,48,48),PK("<",75,160,51,48,60),PK("v",80,208,51,48,60),PK(">",77,256,51,48,60),
- PK("ESC",1,320,3,64,36),PK("ENTER",28,320,39,88,36),PK("ESPACIO",57,320,75,152,36),PK("X",243,416,3,56,36)
+ PK("ESC",1,320,3,64,36),PK("OCULTAR",243,384,3,88,36),PK("ENTER",28,320,39,72,72),PK("ESPACIO",57,400,39,72,72)
 };
 #undef PK
 static const OverlayKey toolbar[5]={{"TEXTO",248},{"PAD",244},{"ESC",1},{"ENTER",28},{"MENU",251}};
@@ -673,7 +673,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 058 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 058P DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
