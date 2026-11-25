@@ -95,6 +95,7 @@ public:
   void release(){if(idle)xSemaphoreGive(idle);}
   void submit(){xTaskNotifyGive(task);}
   void drain(){if(idle){xSemaphoreTake(idle,portMAX_DELAY);xSemaphoreGive(idle);}}
+  bool drainForReset(){if(!idle)return true;if(xSemaphoreTake(idle,pdMS_TO_TICKS(750))!=pdTRUE)return false;xSemaphoreGive(idle);return true;}
   bool allocate(){
     cache=(uint16_t*)ps_malloc(480*480*2);
     if(!cache)return false;
@@ -383,6 +384,16 @@ void dos_show_launcher(){
  }
 }
 bool dos_in_launcher(){return launcher;}
+bool dos_prepare_restart(){
+ // Called only by the producer/Arduino loop. No further VM slices or
+ // LCD jobs are submitted after the restart request.
+ __atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
+ host.timer.pause();
+ traceMain(40);
+ bool idle=host.video.drainForReset();
+ diag_logf(false,"DOS RESTART video_idle=%d\n",(int)idle);
+ return idle;
+}
 void dos_request_exit(){
  if(!vm||launcher)return;
  // Explicit PRISMA EXIT is a full reset, not a guest Escape key.
