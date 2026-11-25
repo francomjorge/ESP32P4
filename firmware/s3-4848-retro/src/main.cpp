@@ -8,6 +8,7 @@
 #include "gb_core.h"
 #ifdef PRISMA_COMBINED
 bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher(); bool dos_in_launcher(); void dos_request_exit(); void dos_touch_game(unsigned,int,int);
+void dos_report_reset();
 static bool dosActive=false;
 #endif
 #include "builtin_roms.h"
@@ -360,7 +361,8 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 047L RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 047S RESET reason=%d\n",(int)esp_reset_reason());
+  dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
