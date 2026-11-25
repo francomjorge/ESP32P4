@@ -3,12 +3,14 @@
 #include <Wire.h>
 #ifdef PRISMA_COMBINED
 #include <freertos/queue.h>
+#include "prisma_diag.h"
 #endif
 #include <vector>
 #include "gb_core.h"
 #ifdef PRISMA_COMBINED
 bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool); bool dos_launcher_touch(unsigned,int,int); void dos_show_launcher(); bool dos_in_launcher(); void dos_request_exit(); void dos_touch_game(unsigned,int,int);
 void dos_report_reset();
+bool dos_diag_bench();
 static bool dosActive=false;
 #endif
 #include "builtin_roms.h"
@@ -143,12 +145,12 @@ static bool rebootTouchGuard=false;
 static uint32_t rebootReleaseAt=0;
 static void restartToNes(){
  dosReturnMagic=NES_RETURN_MAGIC;dosReturnCheck=~NES_RETURN_MAGIC;
- Serial.printf("GAME EXIT RESET target=NES heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+ diag_logf(false,"GAME EXIT RESET target=NES heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
  Serial.flush();ESP.restart();
 }
 void dos_restart_to_selector(){
  dosReturnMagic=DOS_RETURN_MAGIC;dosReturnCheck=~DOS_RETURN_MAGIC;
- Serial.printf("GAME EXIT RESET target=DOS heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+ diag_logf(false,"GAME EXIT RESET target=DOS heap=%u psram=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
  Serial.flush();ESP.restart();
 }
 // Consume the held exit touch; require a stable released screen on reboot.
@@ -376,14 +378,20 @@ static bool load(const String &p){
  Serial.printf("RUN BUILD 031 %s divisor=%u layout=%s\n",nesMode?"NES":"GB",frameDiv,layoutNames[layoutMode]);
  frameDeadline=micros();return true;
 }
+#ifdef PRISMA_COMBINED
+void prisma_diag_status(){
+ Serial.printf("PRISMA STATUS build=049 mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
+}
+bool prisma_diag_bench(){return dosActive&&dos_diag_bench();}
+#endif
 void setup(){
 #ifdef PRISMA_COMBINED
   Serial.setRxBufferSize(2048);
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 048 RESET reason=%d\n",(int)esp_reset_reason());
-  dos_report_reset();
+  Serial.printf("BUILD 049 RESET reason=%d\n",(int)esp_reset_reason());
+  diag_begin();dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -424,6 +432,7 @@ void loop(){
   if(!addr){delay(100);return;}
   if(playing)markPhase(1);
   #ifdef PRISMA_COMBINED
+  if(!dosActive)diag_poll();
   if(dosActive){
     if(dosTouchQueue){xQueueReceive(dosTouchQueue,&dosTouchCurrent,0);}else{pollTouch();dosTouchCurrent={npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240,millis()};}
     const bool touchFresh=millis()-dosTouchCurrent.at<=180;
@@ -565,8 +574,16 @@ void loop(){
   if(elapsedMs>=3000){
     uint32_t workerUs=0,workerCount=0;AsyncVideo::stats(workerUs,workerCount);
     if(async)perfShown=workerCount;
+#ifdef PRISMA_COMBINED
+    diag_logf(true,"PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,(unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+#else
     Serial.printf("PERF %s emu=%.1f fps display=%.1f fps work=%u us late=%u/%u heap=%u psram=%u\n",nesMode?"NES":"GB",perfFrames*1000.0/elapsedMs,perfShown*1000.0/elapsedMs,(unsigned)(perfWork/perfFrames),(unsigned)perfOver,(unsigned)perfFrames,(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getFreePsram());
+#endif
+#ifdef PRISMA_COMBINED
+    diag_logf(true,"VIDEO PERF core=%u us lcd=%u us submit=%u us fixed_div=%u queued=%u dropped=%u maxWork=%u\n",(unsigned)(coreUs/perfFrames),(unsigned)(async?(workerCount?workerUs/workerCount:0):(perfShown?drawUs/perfShown:0)),(unsigned)(queuedFrames?drawUs/queuedFrames:0),frameDiv,queuedFrames,droppedFrames,maxWork);
+#else
     Serial.printf("VIDEO PERF core=%u us lcd=%u us submit=%u us fixed_div=%u queued=%u dropped=%u maxWork=%u\n",(unsigned)(coreUs/perfFrames),(unsigned)(async?(workerCount?workerUs/workerCount:0):(perfShown?drawUs/perfShown:0)),(unsigned)(queuedFrames?drawUs/queuedFrames:0),frameDiv,queuedFrames,droppedFrames,maxWork);
+#endif
     if(nesMode)Serial.printf("NES IMAGE samples=%u changes=%u hash=%08x keys=%02x\n",imageSamples,imageChanges,imageHash,diagKeys);
     imageSamples=imageChanges=0;
     queuedFrames=droppedFrames=coreUs=drawUs=maxWork=0;
