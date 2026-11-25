@@ -10,6 +10,7 @@
 static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
 static bool launcher=false;
+static uint32_t diskReads=0,diskHits=0,diskReadUs=0;
 static bool bootPhase=true;
 static bool mouseMode=true,consoleMode=false;
 static uint32_t serialKeys=0,touchClicks=0;
@@ -103,14 +104,31 @@ public:
 // Raw read-only disks in a dedicated partition; never mount/format NES storage.
 class FlashDisk final : public Faux86::DiskInterface {
  const esp_partition_t *part; uint32_t base,len,pos=0;
+ static constexpr uint32_t blockSize=4096,blocks=32;
+ uint8_t *cache=nullptr; uint32_t tags[blocks];
 public:
- FlashDisk(const esp_partition_t *p,uint32_t b,uint32_t n):part(p),base(b),len(n){}
+ FlashDisk(const esp_partition_t *p,uint32_t b,uint32_t n):part(p),base(b),len(n){cache=(uint8_t*)ps_malloc(blockSize*blocks);for(auto &t:tags)t=UINT32_MAX;}
+ ~FlashDisk(){free(cache);}
  bool isValid() override {return part && len && base<=part->size && len<=part->size-base;}
  uint64_t getSize() override {return len;}
  uint64_t seek(uint64_t offset) override {pos=offset>len?len:offset;return pos;}
  int read(uint8_t *buf,unsigned count) override {
    if(!isValid())return 0; count=static_cast<unsigned>(min<uint32_t>(static_cast<uint32_t>(count),len-pos));
-   if(esp_partition_read(part,base+pos,buf,count)!=ESP_OK)return 0;pos+=count;return count;
+   uint32_t t=micros();unsigned done=0;
+   while(done<count){
+    uint32_t block=pos/blockSize,offset=pos%blockSize,slot=block%blocks;
+    unsigned n=min<uint32_t>(count-done,blockSize-offset);
+    if(cache){
+     if(tags[slot]!=block){
+      unsigned fill=min<uint32_t>(blockSize,len-block*blockSize);
+      if(esp_partition_read(part,base+block*blockSize,cache+slot*blockSize,fill)!=ESP_OK)break;
+      tags[slot]=block;++diskReads;
+     }else ++diskHits;
+     memcpy(buf+done,cache+slot*blockSize+offset,n);
+    }else{if(esp_partition_read(part,base+pos,buf+done,n)!=ESP_OK)break;++diskReads;}
+    pos+=n;done+=n;
+   }
+   diskReadUs+=micros()-t;return done;
  }
  int write(const uint8_t *,unsigned) override {return 0;}
 };
@@ -280,7 +298,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  dosLcd->fillScreen(0);dosLcd->flush(true);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 038 DOS");
+ Serial.println("BUILD 039 DOS");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -334,6 +352,7 @@ void dos_tick(){
     Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,skipped,ESP.getFreeHeap(),ESP.getFreePsram());
     Serial.printf("DOS SLICE max_us=%u capture_max_us=%u render_core0_max_us=%u busy=%u launcher=%d\n",maxSlice,maxCapture,renderMax,host.video.dropped,(int)launcher);maxSlice=maxCapture=host.video.dropped=0;
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
+    Serial.printf("DOS DISK reads=%u hits=%u read_us=%u\n",diskReads,diskHits,diskReadUs);diskReads=diskHits=diskReadUs=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
   }
