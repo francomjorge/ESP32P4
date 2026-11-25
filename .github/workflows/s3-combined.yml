@@ -979,6 +979,26 @@ jobs:
           assert 0<size<=2048,(section,size)
           print("PRISMA IRAM decoder verified:",section,size,"bytes")
           PY
+      - name: Validate compact control geometry
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s=Path("src/dos_runtime.cpp").read_text()
+          p=s.split("static const PanelKey pad[]={",1)[1].split("};",1)[0]
+          keys=re.findall(r'PK\("([^"]+)",(\d+),(\d+),(\d+),(\d+),(\d+)\)',p)
+          assert len(keys)==18,keys
+          used=set()
+          for label,scan,x,y,w,h in keys:
+              x,y,w,h=map(int,(x,y,w,h))
+              assert x>=0 and y>=0 and x+w<=480 and y+h<=120
+              pixels={(i,j) for i in range(x,x+w) for j in range(y,y+h)}
+              assert not (pixels & used),label
+              used.update(pixels)
+          assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","X","^","<","v",">"}
+          assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
+          print("058 PAD geometry verified, no overlapping touch zones")
+          PY
       - name: Merge factory image
         run: |
           set -eux
