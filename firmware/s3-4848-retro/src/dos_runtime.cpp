@@ -166,6 +166,20 @@ static bool launchPending=false, promptGone=false;
 static uint8_t held=0;
 static uint16_t textQueue[512];static unsigned textHead=0,textCount=0;static uint32_t textAccepted=0,textDelivered=0,serialBytes=0;
 static uint32_t directAt=0,directBefore=0,directRelease=0;
+static bool directQueued=false,directClick=false,directFlightClick=false;
+static uint16_t directX=0,directY=0;
+static uint32_t directMoves=0,directTimeouts=0;
+static bool queueDirect(int x,int y,bool click){
+ uint16_t nx,ny;
+ if(!host.video.touchPosition(x,y,nx,ny))return false;
+ // A release click is never overwritten by a later motion sample.
+ if(directQueued&&directClick&&!click)return false;
+ directX=nx;directY=ny;directQueued=true;directClick=click;return true;
+}
+static void cancelDirect(){
+ directQueued=directClick=directFlightClick=false;directAt=directRelease=0;
+ if(vm&&!vm->cpu.prismaMouseInCall)vm->cpu.prismaMousePending=false;
+}
 static void clearText(){textHead=textCount=0;}
 void dos_key(uint8_t key){
  if(!vm||key==held)return;
@@ -253,7 +267,7 @@ static void logGuestText(){
  for(unsigned y=0;y<25;y++){char line[81];unsigned n=0;for(unsigned x=0;x<cols;x++){unsigned c=m.readByte(base+2*(y*cols+x));line[n++]=c>=32&&c<127?char(c):' ';}while(n&&line[n-1]==' ')--n;line[n]=0;if(strcmp(line,oldLines[y])){strcpy(oldLines[y],line);if(n)Serial.printf("DOS TEXT %s\n",line);}}
 }
 static void openLauncher(){
- benchUntil=0;bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;activeGame=-1;clearText();vm->cpu.prismaMouseEnabled=false;vm->cpu.prismaMousePending=false;directAt=directRelease=0;__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
+ benchUntil=0;bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;activeGame=-1;clearText();vm->cpu.prismaMouseEnabled=false;vm->cpu.prismaMousePending=false;cancelDirect();__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
  dos_key(0);dos_mouse(0,0,false);
  host.video.drain();launcher=true;host.timer.pause();
  dosLcd->fillScreen(0x0842);dosLcd->setTextColor(0xffff);
@@ -426,6 +440,8 @@ void dos_touch_game(unsigned n,int x,int y){
  if(releaseAt&&int32_t(millis()-releaseAt)>=0){dos_mouse(0,0,false);releaseAt=0;}
  if(rightRelease&&int32_t(millis()-rightRelease)>=0){vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Right);rightRelease=0;rightDown=false;}
  if(launcher||bootPhase||loadingGame){finger=moved=drag=panelTouch=false;pending=0;dos_key(0);return;}
+ const bool absolute=activeGame==0||activeGame==1;
+ if(n>1&&absolute){cancelDirect();dos_mouse(0,0,false);}
  if(n!=1){
    if(finger&&panelTouch&&n==0&&pending){
      const uint8_t k=pending;
@@ -436,7 +452,7 @@ void dos_touch_game(unsigned n,int x,int y){
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
      else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==1||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==4||activeGame==0)overlayTap(k);
    }else if(finger&&!panelTouch&&!moved&&!drag&&n==0&&millis()-started<350){
-     if(activeGame==0||activeGame==1){uint16_t nx,ny;if(!directAt&&!vm->cpu.prismaMouseInCall&&host.video.touchPosition(ox,oy,nx,ny)){vm->cpu.prismaMouseX=nx;vm->cpu.prismaMouseY=ny;directBefore=vm->cpu.prismaMouseApplied;vm->cpu.prismaMousePending=true;directAt=millis();}}
+     if(absolute){queueDirect(px,py,true);}
      else{dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
    }
    if(drag)dos_mouse(0,0,false);
@@ -447,10 +463,19 @@ void dos_touch_game(unsigned n,int x,int y){
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
   if(!panelTouch&&x<56&&y<56&&activeGame!=0){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
   if(panelTouch){if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){dos_key(pending);++overlayKeys;}return;}
+  if(absolute)queueDirect(x,y,false);
  }
  if(panelTouch)return;
  dos_key(0);
  if(abs(x-ox)+abs(y-oy)>9)moved=true;
+ if(absolute){
+   // Follow touch using the existing absolute-position request. Keep the
+   // original relative drag path for an intentional long press.
+   if(!moved&&!drag&&millis()-started>=350&&!directAt&&!directQueued){drag=true;dos_mouse(0,0,true);}
+   if(drag){if(x!=px||y!=py)dos_mouse(x-px,y-py,true);px=x;py=y;}
+   else if(abs(x-px)+abs(y-py)>=3){if(queueDirect(x,y,false)){px=x;py=y;}}
+   return;
+ }
  if(!moved&&!drag&&millis()-started>=350){drag=true;dos_mouse(0,0,true);}
  if(moved||drag){dos_mouse(x-px,y-py,drag||releaseAt);px=x;py=y;}
 }
@@ -459,7 +484,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 042D DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 042E DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -486,9 +511,18 @@ bool dos_start(Arduino_RGB_Display &display){
 void dos_tick(){
   if(!vm)return;
   if(!launcher){serialInput();pumpText();}
-  if(directAt&&vm->cpu.prismaMouseApplied!=directBefore){directAt=0;dos_mouse(0,0,true);directRelease=millis()+150;++touchClicks;Serial.println("DOS DIRECT CLICK positioned");}
-  else if(directAt&&millis()-directAt>800&&!vm->cpu.prismaMouseInCall){directAt=0;vm->cpu.prismaMousePending=false;Serial.println("DOS DIRECT CLICK no guest query; use CLICK button");}
+  if(directAt&&vm->cpu.prismaMouseApplied!=directBefore){
+    directAt=0;++directMoves;
+    if(directFlightClick){dos_mouse(0,0,true);directRelease=millis()+150;++touchClicks;}
+    directFlightClick=false;
+  }else if(directAt&&millis()-directAt>800&&!vm->cpu.prismaMouseInCall){
+    directAt=0;directFlightClick=false;vm->cpu.prismaMousePending=false;++directTimeouts;
+  }
   if(directRelease&&int32_t(millis()-directRelease)>=0){directRelease=0;dos_mouse(0,0,false);}
+  if(directQueued&&!directAt&&!directRelease&&!vm->cpu.prismaMouseInCall&&!launcher&&!loadingGame){
+    vm->cpu.prismaMouseX=directX;vm->cpu.prismaMouseY=directY;directBefore=vm->cpu.prismaMouseApplied;
+    directFlightClick=directClick;directQueued=directClick=false;vm->cpu.prismaMousePending=true;directAt=millis();
+  }
   static uint32_t maxSlice=0,maxCapture=0;
   if(!launcher){uint32_t t=micros();vm->simulate();uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){Serial.printf("DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
@@ -529,7 +563,7 @@ void dos_tick(){
     Serial.printf("DOS SLICE max_us=%u capture_max_us=%u render_core0_max_us=%u busy=%u launcher=%d\n",maxSlice,maxCapture,renderMax,host.video.dropped,(int)launcher);maxSlice=maxCapture=host.video.dropped=0;
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
-    Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall);
+    Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
     uint32_t rasterRows=0,rasterPossible=0;vm->video.prismaRasterStats(rasterRows,rasterPossible);
