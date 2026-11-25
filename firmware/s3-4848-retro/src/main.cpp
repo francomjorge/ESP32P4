@@ -3,6 +3,10 @@
 #include <Wire.h>
 #include <vector>
 #include "gb_core.h"
+#ifdef PRISMA_COMBINED
+bool dos_start(Arduino_RGB_Display&); void dos_tick(); void dos_key(uint8_t); void dos_mouse(int,int,bool);
+static bool dosActive=false;
+#endif
 #include "builtin_roms.h"
 #include "nes_core.h"
 #include <esp_partition.h>
@@ -154,6 +158,9 @@ static size_t romSize(const String& p){
 static void homeUI(){
  home=true;detail=false;unsigned counts[2]={0,0};
  for(const auto& g:builtins)counts[g.nes?1:0]++;
+#ifdef PRISMA_COMBINED
+ counts[0]=4;
+#endif
  for(unsigned i=0;i<private_rom_count();i++)if(leanPrivate(i))counts[1]++;
  RetroUI::home(ui(),counts);showUI();
 }
@@ -289,6 +296,15 @@ void loop(){
   if(!addr){delay(100);return;}
   if(playing)markPhase(1);
   pollTouch();
+#ifdef PRISMA_COMBINED
+  if(dosActive){
+    static uint32_t exitSince=0; static bool prev=false; static Point last{};
+    if(npoints>=2){if(!exitSince)exitSince=millis();if(millis()-exitSince>1200)ESP.restart();}else exitSince=0;
+    uint8_t k=0;bool mouse=false;int dx=0,dy=0;
+    if(npoints==1){Point p=points[0];if(p.y>400)k=p.x<120?1:p.x<240?0x39:p.x<360?0x1d:0x1c;else if(p.x<80)k=0x4b;else if(p.x>400)k=0x4d;else if(p.y<80)k=0x48;else if(p.y>340)k=0x50;else{mouse=true;if(prev){dx=(int)p.x-last.x;dy=(int)p.y-last.y;}last=p;}}
+    dos_key(k);dos_mouse(dx,dy,mouse);prev=mouse;dos_tick();return;
+  }
+#endif
   if(splashVisible){
     if(npoints)splashPressed=true;
     else if(splashPressed){splashVisible=false;wasDown=false;Serial.println("BOOT 031 home begin");homeUI();Serial.println("BOOT 031 home ok");}
@@ -298,7 +314,16 @@ void loop(){
     if(npoints){if(!wasDown)gestureStart=points[0];gestureEnd=points[0];}
     if(!npoints&&wasDown){
       Point p=gestureStart;int dy=(int)gestureEnd.y-(int)p.y;int dx=(int)gestureEnd.x-(int)p.x;
-      if(home){if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=90&&p.y<410){int s=(p.y-90)/164;if(s<2&&(p.y-90)%164<148){nesMode=s==1;scan();menu();}}}
+      if(home){
+#ifdef PRISMA_COMBINED
+      if(abs(dy)<36&&abs(dx)<36&&hit(p,16,90,448,148)){
+        AsyncVideo::drain();menuCanvas.release();
+        dosActive=dos_start(lcd);
+        if(!dosActive){delay(1500);ESP.restart();}
+        wasDown=false;return;
+      }
+#endif
+      if(abs(dy)<36&&abs(dx)<36&&p.x>=16&&p.x<464&&p.y>=90&&p.y<410){int s=(p.y-90)/164;if(s<2&&(p.y-90)%164<148){nesMode=s==1;scan();menu();}}}
       else if(abs(dy)>55&&abs(dy)>abs(dx)){
         size_t old=page;if(dy<0&&(page+1)*4<paths.size())page++;else if(dy>0&&page)page--;
         if(old!=page)changePage();
