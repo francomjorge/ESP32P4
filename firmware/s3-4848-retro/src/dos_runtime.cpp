@@ -43,7 +43,7 @@ static bool hideGuest=true;
 static bool mouseMode=true,consoleMode=false;
 static int activeGame=-1;
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
-static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:432;}
+static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:activeGame==1?384:432;}
 static uint32_t overlayKeys=0;
 static void drawPanel();
 static void setPanel(uint8_t mode);
@@ -525,12 +525,12 @@ struct OverlayKey {const char* label;uint8_t scan;};
 struct PanelKey {OverlayKey key;uint16_t x,y,w,h;};
 #define PK(label,scan,x,y,w,h) {{label,scan},x,y,w,h}
 static const PanelKey keyboard[]={
- PK("1",2,0,0,40,40),PK("2",3,40,0,40,40),PK("3",4,80,0,40,40),PK("4",5,120,0,40,40),PK("5",6,160,0,40,40),PK("6",7,200,0,40,40),PK("7",8,240,0,40,40),PK("8",9,280,0,40,40),PK("9",10,320,0,40,40),PK("0",11,360,0,40,40),PK("OCULTAR",243,400,0,80,40),
+ PK("1",2,0,0,48,40),PK("2",3,48,0,48,40),PK("3",4,96,0,48,40),PK("4",5,144,0,48,40),PK("5",6,192,0,48,40),PK("6",7,240,0,48,40),PK("7",8,288,0,48,40),PK("8",9,336,0,48,40),PK("9",10,384,0,48,40),PK("0",11,432,0,48,40),
  PK("Q",16,0,40,40,40),PK("W",17,40,40,40,40),PK("E",18,80,40,40,40),PK("R",19,120,40,40,40),PK("T",20,160,40,40,40),PK("Y",21,200,40,40,40),PK("U",22,240,40,40,40),PK("I",23,280,40,40,40),PK("O",24,320,40,40,40),PK("P",25,360,40,40,40),
  PK("A",30,0,80,40,40),PK("S",31,40,80,40,40),PK("D",32,80,80,40,40),PK("F",33,120,80,40,40),PK("G",34,160,80,40,40),PK("H",35,200,80,40,40),PK("J",36,240,80,40,40),PK("K",37,280,80,40,40),PK("L",38,320,80,40,40),PK("MAY",240,360,80,40,40),
  PK("ENTER",28,400,40,80,80),
  PK("Z",44,0,120,40,40),PK("X",45,40,120,40,40),PK("C",46,80,120,40,40),PK("V",47,120,120,40,40),PK("B",48,160,120,40,40),PK("N",49,200,120,40,40),PK("M",50,240,120,40,40),PK("BORRAR",14,280,120,120,40),PK(",",51,400,120,40,40),PK(".",52,440,120,40,40),
- PK("ESPACIO",57,0,160,120,40),PK("ESC",1,120,160,80,40),PK("CTRL",241,200,160,60,40),PK("ALT",242,260,160,60,40),PK("-",12,320,160,40,40),PK("TAB",15,360,160,60,40),PK("PAD",244,420,160,60,40)
+ PK("ESPACIO",57,0,160,120,40),PK("ESC",1,120,160,80,40),PK("CTRL",241,200,160,60,40),PK("ALT",242,260,160,60,40),PK("-",12,320,160,40,40),PK("TAB",15,360,160,60,40),PK("OCULTAR",243,420,160,60,40)
 };
 static const PanelKey pad[]={
  PK("7",8,8,3,36,36),PK("8",9,44,3,36,36),PK("9",10,80,3,36,36),
@@ -538,6 +538,18 @@ static const PanelKey pad[]={
  PK("1",2,8,75,36,36),PK("2",3,44,75,36,36),PK("3",4,80,75,36,36),PK("0",11,116,75,36,36),
  PK("^",72,208,3,48,48),PK("<",75,160,51,48,60),PK("v",80,208,51,48,60),PK(">",77,256,51,48,60),
  PK("ESC",1,320,3,64,36),PK("OCULTAR",243,384,3,88,36),PK("ENTER",28,320,39,72,72),PK("ESPACIO",57,400,39,72,72)
+};
+static const PanelKey monkeyPad[]={
+ PK("ABRIR",24,0,0,60,40),PK("CERRAR",46,60,0,60,40),PK("IR A",17,120,0,60,40),PK("COGER",25,180,0,60,40),
+ PK("MIRAR",38,0,40,60,40),PK("HABLAR",20,60,40,60,40),PK("USAR",22,120,40,60,40),PK("DAR",34,180,40,60,40),
+ PK("EMPUJAR",31,0,80,60,40),PK("TIRAR",21,60,80,60,40),PK("ENCENDER",49,120,80,60,40),PK("APAGAR",33,180,80,60,40),
+ PK("INV+",16,240,0,40,40),PK("^",72,280,0,40,40),PK("INV-",30,320,0,40,40),
+ PK("<",75,240,40,40,40),PK("v",80,280,40,40,40),PK(">",77,320,40,40,40),PK("TAB",15,240,80,120,40),
+ PK("ESC",1,360,0,40,40),PK("OCULTAR",243,400,0,80,40),PK("ENTER",28,360,44,60,60),PK("ESPACIO",57,420,44,60,60)
+};
+static const PanelKey monkeyQuick[]={
+ PK("ABRIR",24,0,0,60,48),PK("CERRAR",46,60,0,60,48),PK("IR A",17,120,0,60,48),PK("COGER",25,180,0,60,48),
+ PK("MIRAR",38,240,0,60,48),PK("HABLAR",20,300,0,60,48),PK("USAR",22,360,0,60,48),PK("DAR",34,420,0,60,48)
 };
 #undef PK
 static const OverlayKey toolbar[5]={{"TEXTO",248},{"PAD",244},{"ESC",1},{"ENTER",28},{"MENU",251}};
@@ -559,10 +571,17 @@ static void drawPanel(){
  if(m==3)return;
  dosLcd->fillRect(0,top,480,480-top,0x0842);
  if(m==1||m==4){unsigned n=0;for(const auto &k:keyboard){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%10==0)vTaskDelay(1);}}
- else if(m==2){unsigned n=0;for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
- else if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,top,120,48);}
- else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,top,240,48);}
- else for(int c=0;c<5;c++){OverlayKey k=toolbar[c];if(c==0&&activeGame==0)k.scan=250;cell(k,c*96,top,96,48);}
+ else if(m==2){
+   unsigned n=0;
+   if(activeGame==1){for(const auto &k:monkeyPad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
+   else{for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
+ }else{
+   const int bottom=activeGame==1?top+48:top;
+   if(activeGame==1){for(const auto &k:monkeyQuick){OverlayKey key=k.key;if(m!=0)key.scan=0;cell(key,k.x,top+k.y,k.w,k.h);}}
+   if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,bottom,120,48);}
+   else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,bottom,240,48);}
+   else for(int c=0;c<5;c++){OverlayKey k=toolbar[c];if(c==0&&activeGame==0)k.scan=250;cell(k,c*96,bottom,96,48);}
+ }
 }
 // Requests never block the producer behind an in-flight VGA frame.
 static void setPanel(uint8_t mode){
@@ -596,10 +615,15 @@ static uint8_t hitPanel(int x,int y){
  if(x<0||x>=480||y<top||y>=480)return 0;
  y-=top;
  if(m==1||m==4){for(const auto &k:keyboard)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
- else if(m==2){for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
- else if(m==0){if(x<96&&activeGame==0)return 250;return toolbar[x/96].scan;}
- else if(m==5)return gameMenu[x/120].scan;
- else if(m==6)return exitMenu[x/240].scan;
+ else if(m==2){
+   if(activeGame==1){for(const auto &k:monkeyPad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+   else{for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+ }else{
+   if(activeGame==1&&y<48){if(m==0){for(const auto &k:monkeyQuick)if(x>=k.x&&x<k.x+k.w)return k.key.scan;}return 0;}
+   if(m==0){if(x<96&&activeGame==0)return 250;return toolbar[x/96].scan;}
+   if(m==5)return gameMenu[x/120].scan;
+   if(m==6)return exitMenu[x/240].scan;
+ }
  return 0;
 }
 static void overlayTap(uint8_t k){
@@ -714,7 +738,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 058A DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}

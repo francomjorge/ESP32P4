@@ -1,7 +1,7 @@
-name: S3 Retro - build 059 combined
+name: S3 Retro - build 058A combined
 on:
   push:
-    branches: [build-059-gfx-profile]
+    branches: [build-058A-actions]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -997,7 +997,33 @@ jobs:
               used.update(pixels)
           assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","OCULTAR","^","<","v",">"}
           assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
-          print("059 PAD geometry verified, no overlapping touch zones")
+          print("058A PAD geometry verified, no overlapping touch zones")
+          PY
+      - name: Validate Monkey actions and keyboard geometry
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s=Path("src/dos_runtime.cpp").read_text()
+          for name,height,n in [("keyboard",200,0),("monkeyPad",120,23),("monkeyQuick",48,8)]:
+              p=s.split("static const PanelKey "+name+"[]={",1)[1].split("};",1)[0]
+              keys=re.findall(r'PK\("([^"]+)",(\d+),(\d+),(\d+),(\d+),(\d+)\)',p)
+              assert keys and (not n or len(keys)==n),name
+              used=set()
+              for label,scan,x,y,w,h in keys:
+                  x,y,w,h=map(int,(x,y,w,h))
+                  assert x+w<=480 and y+h<=height
+                  pts={(i,j) for i in range(x,x+w) for j in range(y,y+h)}
+                  assert not (pts & used),label
+                  used.update(pts)
+              scans={label:int(scan) for label,scan,*_ in keys}
+              if name=="keyboard":
+                  assert all(any(k[0]==str(i) and int(k[4])==48 for k in keys) for i in range(10))
+              if name.startswith("monkey"):
+                  assert scans["ABRIR"]==24 and scans["USAR"]==22 and scans["HABLAR"]==20
+              if name=="monkeyPad":
+                  assert scans["INV+"]==16 and scans["INV-"]==30 and scans["TAB"]==15
+          print("058A action geometry validated")
           PY
       - name: Test touch double-tap predicate
         run: |
@@ -1025,13 +1051,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-059-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-059-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-059.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-058A-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-058A-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-058A.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-059-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-058A-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1040,6 +1066,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-059
+          name: PRISMA-RETRO-S3-058A
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
