@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "prisma_diag.h"
 #include <Arduino_GFX_Library.h>
 #include <esp_partition.h>
 #include <Wire.h>
@@ -23,7 +24,7 @@ static inline void traceWorker(uint32_t phase){__atomic_store_n(&dosTraceWorker,
 void dos_report_reset(){
  const auto reason=esp_reset_reason();
  if(reason!=ESP_RST_POWERON&&reason!=ESP_RST_BROWNOUT&&dosTraceMagic==DOS_TRACE_MAGIC)
-  Serial.printf("DOS PREVIOUS RESET reason=%d main_phase=%u worker_phase=%u panel=%u\n",(int)reason,dosTraceMain,dosTraceWorker,dosTraceMode);
+  diag_crashf("DOS PREVIOUS RESET reason=%d main_phase=%u worker_phase=%u panel=%u\n",(int)reason,dosTraceMain,dosTraceWorker,dosTraceMode);
  dosTraceMagic=0;dosTraceMain=dosTraceWorker=dosTraceMode=0;
 }
 static Arduino_RGB_Display *dosLcd=nullptr;
@@ -310,7 +311,7 @@ static void centered(const char *s,int y,uint8_t size,uint16_t color=0xffff){dos
 static void loadProgress(uint8_t stage,const char *label){
  if(stage==loadStage)return;loadStage=stage;
  dosLcd->fillRect(30,340,420,96,0);centered(label,345,2);char pct[16];snprintf(pct,sizeof(pct),"%u%%",stage);centered(pct,374,2,0x9cfa);
- dosLcd->drawRect(40,407,400,12,0x7bef);dosLcd->fillRect(42,409,(396*stage)/100,8,0x5e9e);dosLcd->flush(true);Serial.printf("DOS LOAD stage=%u %s\n",stage,label);
+ dosLcd->drawRect(40,407,400,12,0x7bef);dosLcd->fillRect(42,409,(396*stage)/100,8,0x5e9e);dosLcd->flush(true);diag_logf(false, "DOS LOAD stage=%u %s\n",stage,label);
 }
 static void showLoading(int game){
  host.video.drain();__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);loadStage=0;
@@ -361,7 +362,7 @@ bool dos_launcher_touch(unsigned n,int x,int y){
   if(choice==3){Serial.println("DOS MENU HOME");Serial.flush();ESP.restart();}
   if(choice==4){consoleMode=true;activeGame=-1;clearText();__atomic_store_n(&hideGuest,false,__ATOMIC_RELAXED);host.timer.resume();vm->video.updatedscreen=true;launcher=false;host.video.invalidate();setPanel(1);Serial.println("DOS USB CONSOLE");}
   if(choice>=0&&choice<2){
-   const char *cmd=gameCmds[choice];Serial.printf("DOS LAUNCH %s\n",cmd);
+   const char *cmd=gameCmds[choice];diag_logf(false, "DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
    activeGame=choice;clearText();vm->cpu.prismaMouseEnabled=true;vm->cpu.prismaMousePending=false;
    showLoading(choice);loadingGame=true;loadingIndex=choice;loadProgress(35,"Comando enviado");
@@ -419,13 +420,19 @@ static void ansiKey(char final,int number){
  case '~':switch(number){case 1:case 7:k=0x47;break;case 2:k=0x52;break;case 3:k=0x53;break;case 4:case 8:k=0x4f;break;case 5:k=0x49;break;case 6:k=0x51;break;case 11:k=0x3b;break;case 12:k=0x3c;break;case 13:k=0x3d;break;case 14:k=0x3e;break;case 15:k=0x3f;break;case 17:k=0x40;break;case 18:k=0x41;break;case 19:k=0x42;break;case 20:k=0x43;break;case 21:k=0x44;break;}break;}
  serialTap(k);
 }
+bool dos_diag_bench(){
+ if(!vm||launcher||bootPhase||loadingGame||benchUntil)return false;
+ host.video.drain();benchStart=millis();benchUntil=benchStart+5000;benchInstructions=vm->cpu.totalexec;
+ diag_logf(false,"DOS BENCH video disabled 5s\n");return true;
+}
 static void serialInput(){
  static uint8_t state=0;static int number=0;static uint32_t at=0,lastCR=0;
- if(vm->input.freeSlots()<8)return;
+ if(vm->input.freeSlots()<8&&!diag_command_pending()&&Serial.peek()!=':')return;
  if(state&&millis()-at>80){if(state==1)serialTap(1);state=0;}
- for(int i=0;i<32&&Serial.available()&&vm->input.freeSlots()>=8&&textCount<512;i++){
-  uint8_t c=Serial.read();++serialBytes;
-  if(c==0x1d&&!bootPhase&&!loadingGame){if(!benchUntil){host.video.drain();benchStart=millis();benchUntil=benchStart+5000;benchInstructions=vm->cpu.totalexec;Serial.println("DOS BENCH video disabled 5s");}continue;}
+ for(int i=0;i<32&&Serial.available();i++){
+  if((vm->input.freeSlots()<8||textCount>=512)&&!diag_command_pending()&&Serial.peek()!=':')break;
+  uint8_t c=Serial.read();if(diag_consume(c))continue;++serialBytes;
+  if(c==0x1d&&!bootPhase&&!loadingGame){dos_diag_bench();continue;}
   if(state==1){if(c=='['||c=='O'){state=2;number=0;at=millis();continue;}serialTap(1);state=0;}
   if(state==2){at=millis();if(c>='0'&&c<='9'){number=min(999,number*10+c-'0');continue;}if(c==';'){number=0;continue;}ansiKey(c,number);state=0;continue;}
   if(c==27){state=1;at=millis();continue;}
@@ -484,7 +491,7 @@ static void setPanel(uint8_t mode){
  if(mode>4||!vm)return;
  traceMain(20);dosTraceMode=mode;
  const uint32_t started=micros();
- Serial.printf("DOS PANEL begin mode=%u heap=%u stack=%u\n",mode,ESP.getFreeHeap(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
+ diag_logf(false, "DOS PANEL begin mode=%u heap=%u stack=%u\n",mode,ESP.getFreeHeap(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
  // The producer is the only submitter. Drain before any LCD operation,
  // then hold the idle semaphore across the entire UI transaction.
  host.video.drain();
@@ -494,7 +501,7 @@ static void setPanel(uint8_t mode){
  dosLcd->fillScreen(0);vTaskDelay(1);drawPanel();traceMain(22);dosLcd->flush(true);
  host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;
  if(locked)host.video.release();
- Serial.printf("DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
+ diag_logf(false, "DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
  traceMain(0);
 }
 static uint8_t hitPanel(int x,int y){
@@ -597,7 +604,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 048 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 049 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -623,7 +630,7 @@ bool dos_start(Arduino_RGB_Display &display){
 }
 void dos_tick(){
   if(!vm)return;
-  if(!launcher){serialInput();pumpText();}
+  if(!launcher){serialInput();pumpText();}else diag_poll();
   if(directAt&&vm->cpu.prismaMouseApplied!=directBefore){
     directAt=0;++directMoves;
     if(directFlightClick){dos_mouse(0,0,true);directRelease=millis()+150;++touchClicks;}
@@ -638,7 +645,7 @@ void dos_tick(){
   }
   static uint32_t maxSlice=0,maxCapture=0;
   if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
-    if(benchUntil&&int32_t(millis()-benchUntil)>=0){Serial.printf("DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
+    if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
     if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
     else if(vm->video.prismaDrawDue){
       if(!vm->video.updatedscreen)vm->video.prismaDrawDue=false;
@@ -660,7 +667,7 @@ void dos_tick(){
      if(!prompt&&loadStage<65)loadProgress(65,"Ejecutando juego");
      unsigned mode=vm->memory.readByte(0x449)&0x7f;
      if((!prompt&&mode>3&&mode!=7)||millis()-launchTime>8000){
-       loadingGame=false;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;__atomic_store_n(&hideGuest,false,__ATOMIC_RELAXED);setPanel(__atomic_load_n(&panelMode,__ATOMIC_RELAXED));Serial.printf("DOS GAME DISPLAY mode=%u elapsed=%u\n",mode,millis()-launchTime);
+       loadingGame=false;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;__atomic_store_n(&hideGuest,false,__ATOMIC_RELAXED);setPanel(__atomic_load_n(&panelMode,__ATOMIC_RELAXED));diag_logf(false, "DOS GAME DISPLAY mode=%u elapsed=%u\n",mode,millis()-launchTime);
      }
    }
    if(launchPending){if(!prompt)promptGone=true;if(promptGone||millis()-launchTime>15000)launchPending=false;}
@@ -675,19 +682,19 @@ void dos_tick(){
     uint32_t shown=__atomic_exchange_n(&host.video.frames,0,__ATOMIC_RELAXED),drawUs=__atomic_exchange_n(&host.video.work,0,__ATOMIC_RELAXED);
     uint32_t skipped=__atomic_exchange_n(&host.video.skipped,0,__ATOMIC_RELAXED);
     uint32_t renderMax=__atomic_exchange_n(&host.video.renderMax,0,__ATOMIC_RELAXED);
-    Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,skipped,ESP.getFreeHeap(),ESP.getFreePsram());
-    Serial.printf("DOS SLICE max_us=%u capture_max_us=%u render_core0_max_us=%u busy=%u launcher=%d\n",maxSlice,maxCapture,renderMax,host.video.dropped,(int)launcher);maxSlice=maxCapture=host.video.dropped=0;
+    diag_logf(true, "DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,skipped,ESP.getFreeHeap(),ESP.getFreePsram());
+    diag_logf(true, "DOS SLICE max_us=%u capture_max_us=%u render_core0_max_us=%u busy=%u launcher=%d\n",maxSlice,maxCapture,renderMax,host.video.dropped,(int)launcher);maxSlice=maxCapture=host.video.dropped=0;
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
     Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
-    Serial.printf("DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    diag_logf(true, "DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
     uint32_t rasterRows=0,rasterPossible=0;vm->video.prismaRasterStats(rasterRows,rasterPossible);
     Serial.printf("DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
     uint32_t sr=__atomic_exchange_n(&host.video.scaleRows,0,__ATOMIC_RELAXED),sp=__atomic_exchange_n(&host.video.scalePossible,0,__ATOMIC_RELAXED);
-    Serial.printf("DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
+    diag_logf(true, "DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
     Serial.printf("DOS DISK reads=%u hits=%u read_us=%u\n",diskReads,diskHits,diskReadUs);diskReads=diskHits=diskReadUs=0;
     lastInstructions=nowInstructions;
     steps=0;last=millis();
