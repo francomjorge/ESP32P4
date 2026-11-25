@@ -317,9 +317,9 @@ struct OverlayKey {const char* label;uint8_t scan;};
 static const OverlayKey keyboard[7][10]={
  {{"1",2},{"2",3},{"3",4},{"4",5},{"5",6},{"6",7},{"7",8},{"8",9},{"9",10},{"0",11}},
  {{"Q",16},{"W",17},{"E",18},{"R",19},{"T",20},{"Y",21},{"U",22},{"I",23},{"O",24},{"P",25}},
- {{"A",30},{"S",31},{"D",32},{"F",33},{"G",34},{"H",35},{"J",36},{"K",37},{"L",38},{"DEL",14}},
+ {{"A",30},{"S",31},{"D",32},{"F",33},{"G",34},{"H",35},{"J",36},{"K",37},{"L",38},{"BKSP",14}},
  {{"Z",44},{"X",45},{"C",46},{"V",47},{"B",48},{"N",49},{"M",50},{",",51},{".",52},{"/",53}},
- {{"SHIFT",240},{"CTRL",241},{"ALT",242},{"TAB",15},{"-",12},{"=",13},{";",39},{"BS",43},{"SPC",57},{"ENT",28}},
+ {{"SHIFT",240},{"CTRL",241},{"ALT",242},{"TAB",15},{"-",12},{"=",13},{";",39},{"\\",43},{"SPC",57},{"ENT",28}},
  {{"F1",59},{"F2",60},{"F3",61},{"F4",62},{"F5",63},{"F6",64},{"F7",65},{"F8",66},{"F9",67},{"F10",68}},
  {{"ESC",1},{"UP",72},{"DOWN",80},{"LEFT",75},{"RIGHT",77},{"PGUP",73},{"PGDN",81},{"MOUSE",243},{"PAD",244},{"EXIT",245}}
 };
@@ -348,7 +348,7 @@ static void drawPanel(){
  else for(int c=0;c<6;c++)cell(toolbar[c],c*80,top,80,48);
 }
 static void setPanel(uint8_t mode){
- host.video.drain();__atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mods=0;
+ host.video.drain();__atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mouseMode=mode!=2;mods=0;
  dosLcd->fillScreen(0);drawPanel();dosLcd->flush(true);
  host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;
  Serial.printf("DOS OVERLAY mode=%u\n",mode);
