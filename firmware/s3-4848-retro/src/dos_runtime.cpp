@@ -43,7 +43,7 @@ static bool hideGuest=true;
 static bool mouseMode=true,consoleMode=false;
 static int activeGame=-1;
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
-static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1?228:p==2?324:p==3?480:p==4?290:432;}
+static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?304:p==3?480:432;}
 static uint32_t overlayKeys=0;
 static void drawPanel();
 static void setPanel(uint8_t mode);
@@ -459,30 +459,29 @@ static void serialInput(){
  }
 }
 struct OverlayKey {const char* label;uint8_t scan;};
-static const OverlayKey keyboard[7][10]={
- {{"1",2},{"2",3},{"3",4},{"4",5},{"5",6},{"6",7},{"7",8},{"8",9},{"9",10},{"0",11}},
- {{"Q",16},{"W",17},{"E",18},{"R",19},{"T",20},{"Y",21},{"U",22},{"I",23},{"O",24},{"P",25}},
- {{"A",30},{"S",31},{"D",32},{"F",33},{"G",34},{"H",35},{"J",36},{"K",37},{"L",38},{"BKSP",14}},
- {{"Z",44},{"X",45},{"C",46},{"V",47},{"B",48},{"N",49},{"M",50},{",",51},{".",52},{"/",53}},
- {{"SHIFT",240},{"CTRL",241},{"ALT",242},{"TAB",15},{"-",12},{"=",13},{";",39},{"\\",43},{"SPC",57},{"ENT",28}},
- {{"F1",59},{"F2",60},{"F3",61},{"F4",62},{"F5",63},{"F6",64},{"F7",65},{"F8",66},{"F9",67},{"F10",68}},
- {{"ESC",1},{"UP",72},{"DOWN",80},{"LEFT",75},{"RIGHT",77},{"PGUP",73},{"PGDN",81},{"MOUSE",243},{"PAD",244},{"EXIT",245}}
+// Geometry and touch hitboxes share one table, in physical pixels.
+struct PanelKey {OverlayKey key;uint16_t x,y,w,h;};
+#define PK(label,scan,x,y,w,h) {{label,scan},x,y,w,h}
+static const PanelKey keyboard[]={
+ PK("1",2,0,0,40,40),PK("2",3,40,0,40,40),PK("3",4,80,0,40,40),PK("4",5,120,0,40,40),PK("5",6,160,0,40,40),PK("6",7,200,0,40,40),PK("7",8,240,0,40,40),PK("8",9,280,0,40,40),PK("9",10,320,0,40,40),PK("0",11,360,0,40,40),PK("OCULTAR",243,400,0,80,40),
+ PK("Q",16,0,40,40,40),PK("W",17,40,40,40,40),PK("E",18,80,40,40,40),PK("R",19,120,40,40,40),PK("T",20,160,40,40,40),PK("Y",21,200,40,40,40),PK("U",22,240,40,40,40),PK("I",23,280,40,40,40),PK("O",24,320,40,40,40),PK("P",25,360,40,40,40),
+ PK("A",30,0,80,40,40),PK("S",31,40,80,40,40),PK("D",32,80,80,40,40),PK("F",33,120,80,40,40),PK("G",34,160,80,40,40),PK("H",35,200,80,40,40),PK("J",36,240,80,40,40),PK("K",37,280,80,40,40),PK("L",38,320,80,40,40),PK("MAY",240,360,80,40,40),
+ PK("ENTER",28,400,40,80,80),
+ PK("Z",44,0,120,40,40),PK("X",45,40,120,40,40),PK("C",46,80,120,40,40),PK("V",47,120,120,40,40),PK("B",48,160,120,40,40),PK("N",49,200,120,40,40),PK("M",50,240,120,40,40),PK("BORRAR",14,280,120,120,40),PK(",",51,400,120,40,40),PK(".",52,440,120,40,40),
+ PK("ESPACIO",57,0,160,120,40),PK("ESC",1,120,160,80,40),PK("CTRL",241,200,160,60,40),PK("ALT",242,260,160,60,40),PK("-",12,320,160,40,40),PK("TAB",15,360,160,60,40),PK("PAD",244,420,160,60,40)
 };
-static const OverlayKey pad[4][6]={
- {{"K",37},{"UP",72},{"S",31},{"ESC",1},{"LMB",246},{"RMB",247}},
- {{"LEFT",75},{"DOWN",80},{"RIGHT",77},{"ENTER",28},{"SPACE",57},{"CTRL",29}},
- {{"A",30},{"Z",44},{"X",45},{"C",46},{"ALT",56},{"F1",59}},
- {{"KEYS",248},{"MOUSE",243},{"FULL",249},{"TAB",15},{"M",50},{"EXIT",245}}
+static const PanelKey pad[]={
+ PK("7",8,0,0,56,44),PK("8",9,56,0,56,44),PK("9",10,112,0,56,44),
+ PK("4",5,0,44,56,44),PK("5",6,56,44,56,44),PK("6",7,112,44,56,44),
+ PK("1",2,0,88,56,44),PK("2",3,56,88,56,44),PK("3",4,112,88,56,44),PK("0",11,0,132,168,44),
+ PK("^",72,236,0,68,64),PK("<",75,168,64,68,64),PK("v",80,236,64,68,64),PK(">",77,304,64,68,64),
+ PK("ENTER",28,372,44,108,132),PK("OCULTAR",243,372,0,108,44)
 };
-static const OverlayKey toolbar[6]={{"KEYS",248},{"PAD",244},{"LMB",246},{"RMB",247},{"FULL",249},{"EXIT",245}};
-static const OverlayKey carmenBar[6]={{"TEXTO",250},{"CLICK",246},{"IZQ",75},{"DER",77},{"ENTER",28},{"SALIR",245}};
-static const OverlayKey carmenKeyboard[5][10]={
- {{"1",2},{"2",3},{"3",4},{"4",5},{"5",6},{"6",7},{"7",8},{"8",9},{"9",10},{"0",11}},
- {{"Q",16},{"W",17},{"E",18},{"R",19},{"T",20},{"Y",21},{"U",22},{"I",23},{"O",24},{"P",25}},
- {{"A",30},{"S",31},{"D",32},{"F",33},{"G",34},{"H",35},{"J",36},{"K",37},{"L",38},{"BORR",14}},
- {{"Z",44},{"X",45},{"C",46},{"V",47},{"B",48},{"N",49},{"M",50},{",",51},{".",52},{"-",12}},
- {{"MAY",240},{"ESP",57},{"ENT",28},{"ESC",1},{"IZQ",75},{"DER",77},{"ARR",72},{"ABA",80},{"CLICK",246},{"OCULT",243}}
-};
+#undef PK
+static const OverlayKey toolbar[6]={{"TEXTO",248},{"PAD",244},{"LMB",246},{"RMB",247},{"FULL",249},{"SALIR JUEGO",245}};
+static const OverlayKey carmenBar[6]={{"TEXTO",250},{"CLICK",246},{"IZQ",75},{"DER",77},{"ENTER",28},{"SALIR JUEGO",245}};
+static uint8_t pendingPanel=255;
+static bool panelRepaint=false;
 static uint8_t mods=0;
 static void cell(const OverlayKey &k,int x,int y,int w,int h){
  bool active=(k.scan==240&&(mods&1))||(k.scan==241&&(mods&2))||(k.scan==242&&(mods&4));
@@ -496,42 +495,48 @@ static void drawPanel(){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(m==3)return;
  dosLcd->fillRect(0,top,480,480-top,0x0842);
- // Panel drawing runs on the producer core; yield between rows so the
- // idle task and touch worker can run, while the LCD worker is drained.
- if(m==1)for(int r=0;r<7;r++){for(int c=0;c<10;c++)cell(keyboard[r][c],c*48,top+r*36,48,36);vTaskDelay(1);}
- else if(m==2)for(int r=0;r<4;r++){for(int c=0;c<6;c++)cell(pad[r][c],c*80,top+r*39,80,39);vTaskDelay(1);}
- else if(m==4)for(int r=0;r<5;r++){for(int c=0;c<10;c++)cell(carmenKeyboard[r][c],c*48,top+r*38,48,38);vTaskDelay(1);}
+ if(m==1||m==4){unsigned n=0;for(const auto &k:keyboard){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%10==0)vTaskDelay(1);}}
+ else if(m==2){unsigned n=0;for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
  else for(int c=0;c<6;c++)cell(activeGame==0?carmenBar[c]:toolbar[c],c*80,top,80,48);
 }
+// Requests never block the producer behind an in-flight VGA frame.
 static void setPanel(uint8_t mode){
  if(mode>4||!vm)return;
- traceMain(20);dosTraceMode=mode;
- const uint32_t started=micros();
- diag_logf(false, "DOS PANEL begin mode=%u heap=%u stack=%u\n",mode,ESP.getFreeHeap(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
- // The producer is the only submitter. Drain before any LCD operation,
- // then hold the idle semaphore across the entire UI transaction.
- host.video.drain();
- const bool locked=host.video.acquire();
- traceMain(21);
- __atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mouseMode=mode!=2;mods=0;
- dosLcd->fillScreen(0);vTaskDelay(1);drawPanel();traceMain(22);dosLcd->flush(true);
- host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;
- if(locked)host.video.release();
- diag_logf(false, "DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
+ pendingPanel=mode;
+}
+static void servicePanel(){
+ if(pendingPanel==255&&!panelRepaint)return;
+ if(launcher||bootPhase||loadingGame)return;
+ const bool async=host.video.asyncReady();
+ if(async&&!host.video.acquire())return;
+ const bool change=pendingPanel!=255;
+ const uint8_t mode=change?pendingPanel:__atomic_load_n(&panelMode,__ATOMIC_RELAXED);
+ pendingPanel=255;panelRepaint=false;
+ traceMain(20);dosTraceMode=mode;const uint32_t started=micros();
+ if(change){
+   diag_logf(false,"DOS PANEL begin mode=%u heap=%u stack=%u\n",mode,ESP.getFreeHeap(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
+   __atomic_store_n(&panelMode,mode,__ATOMIC_RELAXED);mouseMode=mode!=2;mods=0;
+   cancelDirect();dos_key(0);dos_mouse(0,0,false);
+   traceMain(21);dosLcd->fillScreen(0);vTaskDelay(1);
+ }
+ drawPanel();traceMain(22);dosLcd->flush(true);
+ if(change){host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
+ if(async)host.video.release();
+ if(change)diag_logf(false,"DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
  traceMain(0);
 }
 static uint8_t hitPanel(int x,int y){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(x<0||x>=480||y<top||y>=480)return 0;
- if(m==1)return keyboard[(y-top)/36][x/48].scan;
- if(m==2)return pad[(y-top)/39][x/80].scan;
- if(m==4)return carmenKeyboard[(y-top)/38][x/48].scan;
- if(m==0)return (activeGame==0?carmenBar[x/80]:toolbar[x/80]).scan;
+ y-=top;
+ if(m==1||m==4){for(const auto &k:keyboard)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+ else if(m==2){for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+ else if(m==0)return (activeGame==0?carmenBar[x/80]:toolbar[x/80]).scan;
  return 0;
 }
 static void overlayTap(uint8_t k){
  if(!k||vm->input.freeSlots()<8)return;
- if(activeGame==0||consoleMode){uint8_t c=0;const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm"};const unsigned starts[]={2,16,30,44};for(int i=0;i<4;i++)if(k>=starts[i]&&k<starts[i]+strlen(rows[i]))c=rows[i][k-starts[i]];if(c>='a'&&c<='z'&&(mods&1))c-=32;if(k==57)c=32;if(k==28)c=13;if(k==14)c=8;if(k==51)c=',';if(k==52)c='.';if(k==12)c='-';if(c&&enqueueText(c,k)){++overlayKeys;if(mods){mods=0;host.video.drain();drawPanel();dosLcd->flush(true);}return;}}
+ if(activeGame==0||consoleMode){uint8_t c=0;const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm"};const unsigned starts[]={2,16,30,44};for(int i=0;i<4;i++)if(k>=starts[i]&&k<starts[i]+strlen(rows[i]))c=rows[i][k-starts[i]];if(c>='a'&&c<='z'&&(mods&1))c-=32;if(k==57)c=32;if(k==28)c=13;if(k==14)c=8;if(k==51)c=',';if(k==52)c='.';if(k==12)c='-';if(c&&enqueueText(c,k)){++overlayKeys;if(mods){mods=0;panelRepaint=true;}return;}}
 
  if(mods&1)vm->input.handleKeyDown(42);
  if(mods&2)vm->input.handleKeyDown(29);
@@ -541,7 +546,7 @@ static void overlayTap(uint8_t k){
  if(mods&2)vm->input.handleKeyUp(29);
  if(mods&1)vm->input.handleKeyUp(42);
  ++overlayKeys;
- if(mods){mods=0;host.video.drain();drawPanel();dosLcd->flush(true);}
+ if(mods){mods=0;panelRepaint=true;}
 }
 void dos_touch_game(unsigned n,int x,int y){
  static bool finger=false,moved=false,drag=false,panelTouch=false,rightDown=false;
@@ -552,18 +557,18 @@ void dos_touch_game(unsigned n,int x,int y){
  static uint32_t started=0,releaseAt=0,rightRelease=0;
  if(releaseAt&&int32_t(millis()-releaseAt)>=0){dos_mouse(0,0,false);releaseAt=0;}
  if(rightRelease&&int32_t(millis()-rightRelease)>=0){vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Right);rightRelease=0;rightDown=false;}
- if(launcher||bootPhase||loadingGame){finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
+ if(launcher||bootPhase||loadingGame||pendingPanel!=255){finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
  const bool absolute=activeGame>=0&&activeGame<3;
  if(n>1&&absolute){cancelDirect();dos_mouse(0,0,false);}
  if(n!=1){
    if(finger&&panelTouch&&n==0&&pending&&!repeatStarted){
      const uint8_t k=pending;
-     if(k==240||k==241||k==242){mods^=1u<<(k-240);host.video.drain();drawPanel();dosLcd->flush(true);}
+     if(k==240||k==241||k==242){mods^=1u<<(k-240);panelRepaint=true;}
      else if(k==250)setPanel(4);else if(k==243)setPanel(0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
      else if(k==245){diag_logf(false,"DOS EXIT cause=toolbar\n");dos_request_exit();}
      else if(k==246){dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
-     else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==1||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==4||activeGame==0)overlayTap(k);
+     else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)!=2)overlayTap(k);
    }else if(finger&&!panelTouch&&!moved&&!drag&&n==0&&millis()-started<350){
      if(absolute){queueDirect(px,py,true);}
      else{dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
@@ -620,7 +625,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 053 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 053K DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -659,11 +664,12 @@ void dos_tick(){
     vm->cpu.prismaMouseX=directX;vm->cpu.prismaMouseY=directY;directBefore=vm->cpu.prismaMouseApplied;
     directFlightClick=directClick;directQueued=directClick=false;vm->cpu.prismaMousePending=true;directAt=millis();
   }
+  servicePanel();
   static uint32_t maxSlice=0,maxCapture=0;
   if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
     if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
-    else if(vm->video.prismaDrawDue){
+    else if(vm->video.prismaDrawDue&&pendingPanel==255&&!panelRepaint){
       if(!vm->video.updatedscreen)vm->video.prismaDrawDue=false;
       else if(!host.video.asyncReady()){vm->video.prismaDrawDue=false;vm->video.vga_drawCallback(0);}
       else if(host.video.acquire()){
