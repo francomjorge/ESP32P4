@@ -133,7 +133,7 @@ static void pollTouch(){
   clearTouch();
 }
 #ifdef PRISMA_COMBINED
-struct DosTouchSample {uint8_t n;Point p;bool rightPair;};
+struct DosTouchSample {uint8_t n;Point p;bool rightPair;uint32_t at;};
 RTC_NOINIT_ATTR static uint32_t dosReturnMagic;
 RTC_NOINIT_ATTR static uint32_t dosReturnCheck;
 static constexpr uint32_t DOS_RETURN_MAGIC=0x44534c52u;
@@ -142,11 +142,11 @@ static QueueHandle_t dosTouchQueue=nullptr;
 static DosTouchSample dosTouchCurrent{};
 static uint32_t dosTouchDrops=0;
 static void dosTouchWorker(void*){
-  DosTouchSample previous{255,{0,0},false};
+  DosTouchSample previous{255,{0,0},false,0};
   uint32_t sentAt=0;
   for(;;){
     pollTouch();
-    DosTouchSample sample{npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240};
+    DosTouchSample sample{npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240,millis()};
     if(sample.n!=previous.n||sample.p.x!=previous.p.x||sample.p.y!=previous.p.y||sample.rightPair!=previous.rightPair||millis()-sentAt>=40){
       if(xQueueSend(dosTouchQueue,&sample,pdMS_TO_TICKS(5))==pdTRUE){previous=sample;sentAt=millis();}
       else __atomic_fetch_add(&dosTouchDrops,1,__ATOMIC_RELAXED);
@@ -360,7 +360,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 047K RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 047L RESET reason=%d\n",(int)esp_reset_reason());
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
   Serial.printf("PRISMA RETRO S3 flash=%u PSRAM=%u\n",(unsigned)ESP.getFlashChipSize(),(unsigned)ESP.getPsramSize());
@@ -396,8 +396,9 @@ void loop(){
   if(playing)markPhase(1);
   #ifdef PRISMA_COMBINED
   if(dosActive){
-    if(dosTouchQueue){xQueueReceive(dosTouchQueue,&dosTouchCurrent,0);}else{pollTouch();dosTouchCurrent={npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240};}
-    const unsigned npoints=dosTouchCurrent.n;
+    if(dosTouchQueue){xQueueReceive(dosTouchQueue,&dosTouchCurrent,0);}else{pollTouch();dosTouchCurrent={npoints,npoints?points[0]:Point{},npoints>=2&&points[0].x>=240&&points[1].x>=240,millis()};}
+    const bool touchFresh=millis()-dosTouchCurrent.at<=180;
+    const unsigned npoints=touchFresh?dosTouchCurrent.n:0;
     const Point points[1]={dosTouchCurrent.p};
     static uint32_t touchStats=0;
     if(millis()-touchStats>=3000){touchStats=millis();Serial.printf("DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
@@ -405,25 +406,23 @@ void loop(){
     static uint32_t homeSince=0;static bool exitSent=false;
     if(npoints==1&&points[0].x>=424&&points[0].y<56){
       if(!homeSince)homeSince=millis();
-      if(millis()-homeSince>=900&&!exitSent){exitSent=true;if(dos_in_launcher()){Serial.println("DOS RESET REQUEST: selector HOME");Serial.flush();ESP.restart();}else dos_request_exit();}
+      if(millis()-homeSince>=900&&!exitSent){exitSent=true;if(!dos_in_launcher())dos_request_exit();}
       dos_touch_game(2,0,0);dos_tick();return;
     }
     homeSince=0;exitSent=false;
     static uint32_t exitSince=0;static bool gestureSent=false,gestureFromSelector=false,gestureRight=false; static bool prev=false; static Point last{};
     if(npoints>=2){
       if(!exitSince){exitSince=millis();gestureFromSelector=dos_in_launcher();gestureRight=dosTouchCurrent.rightPair;gestureSent=false;Serial.printf("DOS GESTURE two fingers right=%d selector=%d\n",gestureRight,gestureFromSelector);}
-      gestureRight=gestureRight||dosTouchCurrent.rightPair;
+      gestureRight=gestureRight&&dosTouchCurrent.rightPair;
       const uint32_t heldMs=millis()-exitSince;
       if(gestureRight&&heldMs>=650&&!gestureSent){
         gestureSent=true;
-        if(gestureFromSelector)restartToDos(false);
-        else {Serial.println("DOS GESTURE exit requested");dos_request_exit();}
+        if(!gestureFromSelector){Serial.println("DOS GESTURE exit requested");dos_request_exit();}
       }
-      if(heldMs>=2000&&gestureRight&&!gestureFromSelector&&!dos_in_launcher())restartToDos(true);
-      if(heldMs>=3000&&!gestureRight)restartToDos(!gestureFromSelector);
+      // Never reboot on a held gesture. Recovery requires fresh release after an explicit right-side hold.
       dos_touch_game(2,0,0);dos_launcher_touch(npoints,0,0);prev=false;dos_tick();return;
     }
-    if(exitSince){if(npoints){dos_touch_game(2,0,0);dos_tick();return;}exitSince=0;gestureSent=false;dos_show_launcher();}
+    if(exitSince){if(npoints){dos_touch_game(2,0,0);dos_tick();return;}const bool recover=touchFresh&&gestureRight&&!gestureFromSelector&&!dos_in_launcher()&&millis()-exitSince>=3000;exitSince=0;gestureSent=false;if(recover){Serial.println("DOS RECOVERY explicit hold and release");restartToDos(true);}dos_show_launcher();}
     if(dos_launcher_touch(npoints,npoints?points[0].x:0,npoints?points[0].y:0)){prev=false;dos_tick();return;}
     dos_touch_game(npoints,npoints?points[0].x:0,npoints?points[0].y:0);dos_tick();return;
   }
