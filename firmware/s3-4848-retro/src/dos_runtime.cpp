@@ -9,6 +9,8 @@ static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
 static bool launcher=false;
 static bool bootPhase=true;
+static bool mouseMode=true;
+static uint32_t serialKeys=0,touchClicks=0;
 static const char *gameNames[]={"Carmen Sandiego","The Incredible Machine","Indiana Jones - Last Crusade","Indiana Jones - Temple of Doom"};
 static const char *gameCmds[]={"carmen","tim","indy3","indy2"};
 
@@ -95,7 +97,7 @@ void dos_key(uint8_t key){
 void dos_mouse(int dx,int dy,bool pressed){
  if(!vm)return;
  static bool down=false;
- if(dx||dy)vm->mouse.handleMove(dx,dy);
+ if(dx||dy)vm->mouse.handleMove(constrain(dx,-127,127),constrain(dy,-127,127));
  if(pressed!=down){if(pressed)vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Left);else vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Left);down=pressed;}
 }
 static uint8_t asciiScan(char c){
@@ -152,36 +154,102 @@ bool dos_launcher_touch(unsigned n,int x,int y){
   if(choice>=0&&choice<4){
    const char *cmd=gameCmds[choice];Serial.printf("DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
-   host.timer.resume();vm->video.updatedscreen=true;launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
+   mouseMode=choice<2;host.timer.resume();vm->video.updatedscreen=true;launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
   }
   choice=-1;
  }
  return true;
 }
 void dos_show_launcher(){if(vm&&!launcher&&!launchPending&&atPrompt())openLauncher();}
+static void serialTap(uint8_t k,bool shift=false,bool ctrl=false){
+ if(!k)return;
+ if(shift)vm->input.handleKeyDown(0x2a);
+ if(ctrl)vm->input.handleKeyDown(0x1d);
+ vm->input.handleKeyDown(k);vm->input.handleKeyUp(k);
+ if(ctrl)vm->input.handleKeyUp(0x1d);
+ if(shift)vm->input.handleKeyUp(0x2a);
+ ++serialKeys;
+}
+static void asciiKey(uint8_t c){
+ if(c>='a'&&c<='z'){serialTap(asciiScan(c));return;}
+ if(c>='A'&&c<='Z'){serialTap(asciiScan(c+32),true);return;}
+ if(c>='0'&&c<='9'){serialTap(asciiScan(c));return;}
+ if(c==13||c==10){serialTap(0x1c);return;}
+ if(c==8||c==127){serialTap(0x0e);return;}
+ if(c==9){serialTap(0x0f);return;}
+ if(c==27){serialTap(1);return;}
+ if(c==32){serialTap(0x39);return;}
+ if(c>=1&&c<=26){serialTap(asciiScan(c+96),false,true);return;}
+ const char *plain="-=[]\\;',./",*shifted="_+{}|:\"<>?";
+ const uint8_t keys[]={12,13,26,27,43,39,40,51,52,53};
+ const char *p=strchr(plain,c);
+ if(p&&*p){serialTap(keys[p-plain]);return;}
+ p=strchr(shifted,c);if(p&&*p){serialTap(keys[p-shifted],true);return;}
+ const char *digits="!@#$%^&*()";p=strchr(digits,c);
+ if(p&&*p){serialTap(2+(p-digits),true);return;}
+ if(c==96||c==126)serialTap(41,c==126);
+}
+static void ansiKey(char final,int number){
+ uint8_t k=0;
+ switch(final){case 'A':k=0x48;break;case 'B':k=0x50;break;case 'C':k=0x4d;break;case 'D':k=0x4b;break;case 'H':k=0x47;break;case 'F':k=0x4f;break;case 'P':k=0x3b;break;case 'Q':k=0x3c;break;case 'R':k=0x3d;break;case 'S':k=0x3e;break;
+ case '~':switch(number){case 1:case 7:k=0x47;break;case 2:k=0x52;break;case 3:k=0x53;break;case 4:case 8:k=0x4f;break;case 5:k=0x49;break;case 6:k=0x51;break;case 11:k=0x3b;break;case 12:k=0x3c;break;case 13:k=0x3d;break;case 14:k=0x3e;break;case 15:k=0x3f;break;case 17:k=0x40;break;case 18:k=0x41;break;case 19:k=0x42;break;case 20:k=0x43;break;case 21:k=0x44;break;}break;}
+ serialTap(k);
+}
 static void serialInput(){
- // ASCII terminal commands, including game launcher batch names.
- static const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm"};
- static const uint8_t starts[]={2,16,30,44};
- if(!Serial.available())return;
- char c=Serial.read();if(c=='\n')return;
- uint8_t k=c=='\r'?0x1c:c==' '?0x39:c==27?1:c==8?14:0;
- for(int i=0;i<4&&!k;i++){const char *p=strchr(rows[i],tolower((unsigned char)c));if(p&&*p)k=starts[i]+(p-rows[i]);}
- if(k){vm->input.handleKeyDown(k);vm->input.tick();vm->input.handleKeyUp(k);vm->input.tick();}
+ static uint8_t state=0;static int number=0;static uint32_t at=0,lastCR=0;
+ if(vm->input.freeSlots()<8)return;
+ if(state&&millis()-at>80){if(state==1)serialTap(1);state=0;}
+ for(int i=0;i<32&&Serial.available()&&vm->input.freeSlots()>=8;i++){
+  uint8_t c=Serial.read();
+  if(state==1){if(c=='['||c=='O'){state=2;number=0;at=millis();continue;}serialTap(1);state=0;}
+  if(state==2){at=millis();if(c>='0'&&c<='9'){number=min(999,number*10+c-'0');continue;}if(c==';'){number=0;continue;}ansiKey(c,number);state=0;continue;}
+  if(c==27){state=1;at=millis();continue;}
+  if(c==10&&lastCR&&millis()-lastCR<100){lastCR=0;continue;}
+  if(c==13)lastCR=millis();else lastCR=0;
+  asciiKey(c);
+ }
+}
+void dos_touch_game(unsigned n,int x,int y){
+ static bool finger=false,moved=false,drag=false,modeTouch=false;
+ static int px=0,py=0,ox=0,oy=0;
+ static uint32_t started=0,releaseAt=0;
+ if(releaseAt&&int32_t(millis()-releaseAt)>=0){dos_mouse(0,0,false);releaseAt=0;}
+ if(n!=1){
+   if(finger&&mouseMode&&!modeTouch&&!moved&&!drag&&millis()-started<350&&n==0){
+     dos_mouse(0,0,true);releaseAt=millis()+90;++touchClicks;
+   }else if(drag)dos_mouse(0,0,false);
+   finger=moved=drag=modeTouch=false;dos_key(0);return;
+ }
+ if(!finger){
+  finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=false;
+  modeTouch=(x<56&&y<56);
+  if(modeTouch){mouseMode=!mouseMode;Serial.printf("DOS INPUT MODE %s\n",mouseMode?"MOUSE":"KEYBOARD");dos_key(0);return;}
+ }
+ if(modeTouch)return;
+ if(!mouseMode){
+  uint8_t k=0;
+  if(y>400)k=x<120?1:x<240?0x39:x<360?0x1d:0x1c;
+  else if(x<100)k=0x4b;else if(x>380)k=0x4d;else if(y<100)k=0x48;else if(y>320)k=0x50;
+  dos_key(k);return;
+ }
+ dos_key(0);
+ if(abs(x-ox)+abs(y-oy)>9)moved=true;
+ if(!moved&&!drag&&millis()-started>=350){drag=true;dos_mouse(0,0,true);}
+ if(moved||drag){dos_mouse(x-px,y-py,drag||releaseAt);px=x;py=y;}
 }
 static void fail(const char *msg){Serial.println(msg);dosLcd->setCursor(8,8);dosLcd->setTextColor(0xffff);dosLcd->setTextSize(2);dosLcd->println(msg);dosLcd->flush(true);}
 bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  dosLcd->fillScreen(0);dosLcd->flush(true);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 035 DOS");
+ Serial.println("BUILD 036 DOS");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
   cfg.diskDriveA=new FlashDisk(part,h.floppyOffset,h.floppySize);
   if(!cfg.diskDriveA->isValid()){fail("Invalid boot disk");return false;}
   if(h.hardSize){cfg.diskDriveC=new FlashDisk(part,h.hardOffset,h.hardSize);if(!cfg.diskDriveC->isValid()){fail("Invalid game disk");return false;}}
-  cfg.singleThreaded=true;cfg.slowSystem=false;cfg.cpuSpeed=120; cfg.cpuTiming=63;
+  cfg.singleThreaded=true;cfg.slowSystem=false;cfg.cpuSpeed=240; cfg.cpuTiming=127;
   cfg.frameDelay=100;cfg.framebuffer.width=VGA_FRAMEBUFFER_WIDTH;cfg.framebuffer.height=VGA_FRAMEBUFFER_HEIGHT;
   cfg.enableAudio=false;cfg.useDisneySoundSource=false;cfg.useSoundBlaster=false;cfg.useAdlib=false;cfg.usePCSpeaker=false;
   cfg.biosFile=new Faux86::EmbeddedDisk(pcxtbios_bin,pcxtbios_bin_len);
@@ -213,6 +281,7 @@ void dos_tick(){
     uint64_t nowInstructions=vm->cpu.totalexec;
     Serial.printf("DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,host.video.frames*1000.0/elapsed,host.video.frames?host.video.work/host.video.frames:0,host.video.skipped,ESP.getFreeHeap(),ESP.getFreePsram());
     Serial.printf("DOS SLICE max_us=%u launcher=%d\n",maxSlice,(int)launcher);maxSlice=0;
+    Serial.printf("DOS INPUT serial_keys=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     lastInstructions=nowInstructions;host.video.skipped=0;
     host.video.frames=host.video.work=steps=0;last=millis();
   }
