@@ -147,6 +147,21 @@ public:
   void resize(uint32_t,uint32_t) override {video.invalidate();}
 };
 // Raw read-only disks in a dedicated partition; never mount/format NES storage.
+// Memory-mapped immutable PC ROM: never allocate a second copy in SRAM.
+class FlashROM final : public Faux86::DiskInterface {
+ const uint8_t *data;uint64_t length,position=0;
+public:
+ FlashROM(const uint8_t *p,uint64_t n):data(p),length(n){}
+ bool isValid() override {return data&&length;}
+ uint64_t getSize() override {return length;}
+ uint64_t seek(uint64_t offset) override {position=offset;return position;}
+ int read(uint8_t *buffer,unsigned count) override {
+   if(position>=length)return 0;
+   unsigned n=(unsigned)min<uint64_t>(count,length-position);
+   memcpy(buffer,data+position,n);position+=n;return n;
+ }
+ int write(const uint8_t*,unsigned) override {return 0;}
+};
 class FlashDisk final : public Faux86::DiskInterface {
  const esp_partition_t *part; uint32_t base,len,pos=0;
  static constexpr uint32_t blockSize=4096,blocks=32;
@@ -507,7 +522,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosLcd=&display;
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 046 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 046N DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -517,10 +532,10 @@ bool dos_start(Arduino_RGB_Display &display){
   cfg.singleThreaded=true;cfg.slowSystem=false;cfg.cpuSpeed=240; cfg.cpuTiming=127;
   cfg.frameDelay=33;cfg.framebuffer.width=VGA_FRAMEBUFFER_WIDTH;cfg.framebuffer.height=VGA_FRAMEBUFFER_HEIGHT;
   cfg.enableAudio=false;cfg.useDisneySoundSource=false;cfg.useSoundBlaster=false;cfg.useAdlib=false;cfg.usePCSpeaker=false;
-  cfg.biosFile=new Faux86::EmbeddedDisk(pcxtbios_bin,pcxtbios_bin_len);
-  cfg.romBasicFile=new Faux86::EmbeddedDisk(rombasic_bin,rombasic_bin_len);
-  cfg.videoRomFile=new Faux86::EmbeddedDisk(videorom_bin,videorom_bin_len);
-  cfg.asciiFile=new Faux86::EmbeddedDisk(asciivga_dat,asciivga_dat_len);
+  cfg.biosFile=new FlashROM(pcxtbios_bin,pcxtbios_bin_len);
+  cfg.romBasicFile=new FlashROM(rombasic_bin,rombasic_bin_len);
+  cfg.videoRomFile=new FlashROM(videorom_bin,videorom_bin_len);
+  cfg.asciiFile=new FlashROM(asciivga_dat,asciivga_dat_len);
   cfg.setBootDrive("fd0");
   vga_framebuffer=(uint16_t*)ps_calloc(VGA_FRAMEBUFFER_SIZE,sizeof(uint16_t));
   if(!vga_framebuffer){fail("VGA allocation failed");return false;}
