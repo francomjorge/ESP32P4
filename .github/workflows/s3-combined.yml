@@ -380,7 +380,7 @@ jobs:
                     }
                   }
                 }"""),
-              ("      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
+              ("    case 0xCA: /* CA RETF Iw */\n      oper1 = getmem16(segregs[regcs], ip);\n      ip = pop();\n      segregs[regcs] = pop();\n      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","    case 0xCA: /* CA RETF Iw */\n      oper1 = getmem16(segregs[regcs], ip);\n      ip = pop();\n      segregs[regcs] = pop();\n      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
               ("      decodeflagsword(pop());\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","      decodeflagsword(pop());\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
           ])
           print("Faux86 040C input patches applied")
