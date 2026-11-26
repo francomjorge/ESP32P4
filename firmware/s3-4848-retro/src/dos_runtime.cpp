@@ -300,9 +300,16 @@ static int monkeyTapX=0,monkeyTapY=0;
 static bool monkeyRamTouch=false,monkeyRamFlight=false,monkeyRamClick=false;
 static uint16_t monkeyRamX=0,monkeyRamY=0;
 static uint32_t monkeyRamStarted=0,monkeyRamWrites=0,monkeyRamRejects=0;
+// One independent activation pulse for RAM-touch Monkey Island.
+// Do not reuse held: dos_touch_game releases that key on finger-up.
+static bool monkeyClickPending=false,monkeyClickDown=false,monkeyClickMouse=false;
+static uint32_t monkeyClickAt=0,monkeyClickRead=0,monkeyClickWait=0;
+static uint16_t monkeyClickBiosHead=0,monkeyClickBiosTail=0;
+static const char *monkeyClickSource="none";
+static void monkeyClickCancel();
 // Two nearby completed taps produce one guest click. Unsigned subtraction handles millis wrap.
 static bool monkeyDoubleTap(bool armed,uint32_t now,uint32_t prior,int x,int y,int oldX,int oldY){
- return armed && uint32_t(now-prior)<=350 && abs(x-oldX)+abs(y-oldY)<=24;
+ return armed && uint32_t(now-prior)<=(monkeyRamTouch?500u:350u) && abs(x-oldX)+abs(y-oldY)<=(monkeyRamTouch?32:24);
 }
 static bool queueDirect(int x,int y,bool click){
  uint16_t nx,ny;
@@ -312,6 +319,7 @@ static bool queueDirect(int x,int y,bool click){
  directX=nx;directY=ny;directQueued=true;directClick=click;return true;
 }
 static void cancelDirect(){
+ monkeyClickCancel();
  monkeyTapArmed=false;
  directQueued=directClick=directFlightClick=false;directAt=directRelease=0;monkeyRamFlight=monkeyRamClick=false;
  if(vm&&!vm->cpu.prismaMouseInCall)vm->cpu.prismaMousePending=false;
@@ -328,6 +336,44 @@ void dos_mouse(int dx,int dy,bool pressed){
  static bool down=false;
  if(dx||dy)vm->mouse.handleMove(constrain(dx,-127,127),constrain(dy,-127,127));
  if(pressed!=down){if(pressed)vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Left);else vm->mouse.handleButtonUp(Faux86::SerialMouse::ButtonType::Left);down=pressed;}
+}
+static void monkeyClickCancel(){
+ if(vm&&monkeyClickDown){
+   if(monkeyClickMouse)dos_mouse(0,0,false);
+   else{vm->input.handleKeyUp(28);vm->input.tick();}
+   Serial.println("DOS ACTION cancelled: released");
+ }
+ monkeyClickPending=monkeyClickDown=false;
+}
+static bool monkeyClickRequest(bool mouse,const char *source){
+ if(!vm||!monkeyRamTouch||activeGame!=1||launcher||bootPhase||loadingGame||launchPending||benchUntil||pendingPanel!=255)return false;
+ if(monkeyClickPending||monkeyClickDown){Serial.println("DOS ACTION busy");return false;}
+ monkeyClickPending=true;monkeyClickMouse=mouse;monkeyClickSource=source;monkeyClickWait=millis();
+ Serial.printf("DOS ACTION request source=%s method=%s\n",source,mouse?"mouse":"enter");
+ return true;
+}
+static void monkeyClickTick(){
+ if(!monkeyClickPending&&!monkeyClickDown)return;
+ if(!vm||!monkeyRamTouch||activeGame!=1||launcher||bootPhase||loadingGame||launchPending||benchUntil||pendingPanel!=255){monkeyClickCancel();return;}
+ const uint32_t now=millis();
+ if(monkeyClickDown){
+   const unsigned reads=vm->input.prismaReadCount-monkeyClickRead;
+   if(now-monkeyClickAt<180||(!monkeyClickMouse&&!reads&&now-monkeyClickAt<600))return;
+   if(monkeyClickMouse)dos_mouse(0,0,false);
+   else{vm->input.handleKeyUp(28);vm->input.tick();}
+   Serial.printf("DOS ACTION up source=%s method=%s ms=%u guest_reads=%u bios=%u,%u->%u,%u queue=%d\n",monkeyClickSource,monkeyClickMouse?"mouse":"enter",now-monkeyClickAt,reads,monkeyClickBiosHead,monkeyClickBiosTail,vm->memory.readWord(0x41a),vm->memory.readWord(0x41c),vm->input.freeSlots());
+   monkeyClickDown=false;return;
+ }
+ if(held||directQueued||monkeyRamFlight||vm->input.freeSlots()<8){
+   if(now-monkeyClickWait>=700){monkeyClickPending=false;Serial.println("DOS ACTION timeout waiting for idle input/position");}
+   return;
+ }
+ monkeyClickPending=false;monkeyClickDown=true;monkeyClickAt=now;monkeyClickRead=vm->input.prismaReadCount;
+ monkeyClickBiosHead=vm->memory.readWord(0x41a);monkeyClickBiosTail=vm->memory.readWord(0x41c);
+ if(monkeyClickMouse)dos_mouse(0,0,true);
+ else{vm->input.handleKeyDown(28);vm->input.tick();}
+ ++touchClicks;++monkeyClicksApplied;
+ Serial.printf("DOS ACTION down source=%s method=%s queue=%d guest_read=%u\n",monkeyClickSource,monkeyClickMouse?"mouse":"enter",vm->input.freeSlots(),monkeyClickRead);
 }
 static uint8_t asciiScan(char c){
  static const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm"};
@@ -532,7 +578,7 @@ static bool monkeyRamCoherent(){
  return x<=319&&y<=199&&int16_t(cursorWatchWord(cursorRenderX))==int(x)-8&&cursorWatchWord(cursorRenderY)==y+9;
 }
 static void monkeyRamTick(){
- if(!monkeyRamTouch)return;
+ if(!monkeyRamTouch||monkeyClickDown)return;
  if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||launchPending){monkeyRamTouch=false;monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
  if(held||benchUntil||pendingPanel!=255){monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
  if(monkeyRamFlight){
@@ -542,7 +588,7 @@ static void monkeyRamTick(){
        if(vm->input.freeSlots()<8){
          if(millis()-monkeyRamStarted<300)return;
          ++monkeyRamRejects;
-       }else{serialTap(28);++touchClicks;++monkeyClicksApplied;}
+       }else{monkeyClickRequest(false,"double");}
      }
      ++directMoves;monkeyPositionMaxUs=max(monkeyPositionMaxUs,uint32_t(millis()-monkeyRamStarted)*1000u);
      monkeyRamFlight=monkeyRamClick=false;
@@ -869,6 +915,10 @@ static void cursorAutoTick(){
 }
 void dos_cursor_scan(const char *arg){
  if(!strcmp(arg,"stop")){cursorRamFree();monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM scan released; RAM touch off");return;}
+ if(!strcmp(arg,"click")||!strcmp(arg,"click mouse")){
+   if(!monkeyClickRequest(!strcmp(arg,"click mouse"),"serial"))Serial.println("DOS ACTION rejected: enable RAM touch in Monkey Island and wait for idle");
+   return;
+ }
  if(!strcmp(arg,"touch off")){monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM TOUCH off");return;}
  if(!strcmp(arg,"touch status")){Serial.printf("DOS RAM TOUCH enabled=%u coherent=%u XY=%u,%u writes=%u rejected=%u\n",unsigned(monkeyRamTouch),unsigned(monkeyRamCoherent()),vm?cursorWatchWord(cursorLogicalX):0,vm?cursorWatchWord(cursorLogicalY):0,monkeyRamWrites,monkeyRamRejects);return;}
  if(!strcmp(arg,"touch on")){
@@ -1072,6 +1122,7 @@ void dos_touch_game(unsigned n,int x,int y){
      else if(k==253&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==6){diag_logf(false,"DOS EXIT cause=confirmed_menu\n");dos_request_exit();}
      else if(k==246){dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
+     else if(monkey&&monkeyRamTouch&&k==28){monkeyClickRequest(false,"panel");++overlayKeys;}
      else if(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)!=2)overlayTap(k);
    }else if(finger&&!panelTouch&&!moved&&!drag&&n==0&&millis()-started<350){
      if(monkey){
@@ -1095,7 +1146,7 @@ void dos_touch_game(unsigned n,int x,int y){
   finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=repeatStarted=false;
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
   if(!panelTouch&&x<56&&y<56&&(!absolute||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3)){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
-  if(panelTouch){monkeyTapArmed=false;if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2){if(monkey)cursorAutoBegin(pending);dos_key(pending);++overlayKeys;}return;}
+  if(panelTouch){monkeyTapArmed=false;if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2&&!(monkey&&monkeyRamTouch&&pending==28)){if(monkey)cursorAutoBegin(pending);dos_key(pending);++overlayKeys;}return;}
   if(absolute)queueDirect(x,y,false);
  }
  if(panelTouch){
@@ -1148,7 +1199,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R7 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R8 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1184,6 +1235,7 @@ void dos_tick(){
     directAt=0;directFlightClick=false;vm->cpu.prismaMousePending=false;++directTimeouts;
   }
   if(directRelease&&int32_t(millis()-directRelease)>=0){directRelease=0;dos_mouse(0,0,false);}
+  monkeyClickTick();
   if(monkeyRamTouch)monkeyRamTick();
   if(!monkeyRamTouch&&directQueued&&!directAt&&!directRelease&&!vm->cpu.prismaMouseInCall&&!launcher&&!loadingGame){
     vm->cpu.prismaMouseX=directX;vm->cpu.prismaMouseY=directY;directBefore=vm->cpu.prismaMouseApplied;
