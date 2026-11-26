@@ -60,7 +60,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 059S2 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 059T1 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);
