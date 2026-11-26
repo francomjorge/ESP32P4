@@ -1,7 +1,7 @@
-name: S3 Retro - build 071 combined
+name: S3 Retro - build 072 combined
 on:
   push:
-    branches: [build-071-horizontal-spans]
+    branches: [build-072-cpu-profile]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -1065,6 +1065,81 @@ jobs:
               ("    case 0xCA: /* CA RETF Iw */\n      oper1 = getmem16(segregs[regcs], ip);\n      ip = pop();\n      segregs[regcs] = pop();\n      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","    case 0xCA: /* CA RETF Iw */\n      oper1 = getmem16(segregs[regcs], ip);\n      ip = pop();\n      segregs[regcs] = pop();\n      regs.wordregs[regsp] = regs.wordregs[regsp] + oper1;\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
               ("      decodeflagsword(pop());\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));","      decodeflagsword(pop());\n      if(prismaMouseInCall)prismaMouseReturn();\n      if (vm.debugger)\n        vm.debugger->onReturn(segaddr(segregs[regcs], ip));"),
           ])
+          # 072: opt-in sampled interpreter profile; no guest timing changes.
+          p=path("CPU.cpp","prismaDeadline")
+          src=p.read_text()
+          anchor="using namespace Faux86;"
+          assert src.count(anchor)==1
+          helper="""
+          // Single producer: the main DOS emulation task. Bounded DRAM
+          // tables, no allocations or serial calls in the interpreter.
+          struct PrismaPC {uint32_t pc,count;};
+          static bool prismaProfileOn=false;
+          static unsigned prismaSampleCountdown=1;
+          static uint32_t prismaProfileRng=0x72819u;
+          static uint32_t prismaProfileCounters[10]={};
+          static uint32_t prismaOpcodes[256]={};
+          static PrismaPC prismaPCs[256]={};
+          static void prismaProfileClear(){
+            memset(prismaProfileCounters,0,sizeof(prismaProfileCounters));
+            memset(prismaOpcodes,0,sizeof(prismaOpcodes));
+            memset(prismaPCs,0,sizeof(prismaPCs));
+          }
+          static __attribute__((noinline)) void prismaProfileSample(uint32_t pc,uint8_t op,bool rep){
+            ++prismaProfileCounters[0];
+            if(rep)++prismaProfileCounters[1];
+            ++prismaOpcodes[op];
+            unsigned h=((pc^(pc>>11))*2654435761u)>>24;
+            bool found=false;
+            for(unsigned i=0;i<8;++i){
+              auto &e=prismaPCs[(h+i)&255];
+              if(!e.count||e.pc==pc){e.pc=pc;++e.count;found=true;break;}
+            }
+            if(!found)++prismaProfileCounters[8];
+            // Vary sample spacing to reduce periodic loop aliasing.
+            prismaProfileRng=prismaProfileRng*1664525u+1013904223u;
+            prismaSampleCountdown=64+(prismaProfileRng>>25);
+          }
+          void CPU::prismaProfileEnable(bool enabled){
+            prismaProfileOn=enabled;
+            if(enabled){prismaProfileClear();prismaSampleCountdown=1;}
+          }
+          void CPU::prismaProfileRead(uint32_t *out){
+            memcpy(out,prismaProfileCounters,sizeof(prismaProfileCounters));
+            memset(out+10,0,12*sizeof(uint32_t));
+            // Three most frequently sampled guest addresses and opcodes.
+            for(const auto &e:prismaPCs)if(e.count){
+              for(unsigned j=0;j<3;++j)if(e.count>out[11+2*j]){
+                for(unsigned k=2;k>j;--k){out[10+2*k]=out[10+2*(k-1)];out[11+2*k]=out[11+2*(k-1)];}
+                out[10+2*j]=e.pc;out[11+2*j]=e.count;break;
+              }
+            }
+            for(unsigned op=0;op<256;++op)if(prismaOpcodes[op]){
+              for(unsigned j=0;j<3;++j)if(prismaOpcodes[op]>out[17+2*j]){
+                for(unsigned k=2;k>j;--k){out[16+2*k]=out[16+2*(k-1)];out[17+2*k]=out[17+2*(k-1)];}
+                out[16+2*j]=op;out[17+2*j]=prismaOpcodes[op];break;
+              }
+            }
+            prismaProfileClear();
+          }
+          """
+          src=src.replace(anchor,anchor+"\n"+helper,1)
+          a=src.index("void CPU::exec86(")
+          part=src[a:]
+          for old,new,count in [
+            ("    totalexec++;\n\n    if (cpu_type", "    if(prismaProfileOn && --prismaSampleCountdown==0)prismaProfileSample((uint32_t(segregs[regcs])<<16)|firstip,opcode,reptype!=0);\n    totalexec++;\n\n    if (cpu_type",1),
+            ("      vm.input.tick();\n      vm.timing.tick();","      const uint32_t profileT=prismaProfileOn?uint32_t(esp_timer_get_time()):0;\n      vm.input.tick();\n      vm.timing.tick();\n      if(prismaProfileOn){++prismaProfileCounters[3];prismaProfileCounters[4]+=uint32_t(esp_timer_get_time())-profileT;}",1),
+            ("      intcall86(vm.pic.nextintr());","      if(prismaProfileOn)++prismaProfileCounters[2];\n      intcall86(vm.pic.nextintr());",1),
+            ("    if (hltstate)\n      goto skipexecution;","    if (hltstate){if(prismaProfileOn)++prismaProfileCounters[7];goto skipexecution;}",1),
+            ("totalexec+=2*n-1;loopcount+=2*n-1;ip=firstip;","if(prismaProfileOn){prismaProfileCounters[5]+=bytes;prismaProfileCounters[6]+=n;++prismaProfileCounters[9];}\n                    totalexec+=2*n-1;loopcount+=2*n-1;ip=firstip;",4),
+          ]:
+              assert part.count(old)==count,(old,part.count(old))
+              part=part.replace(old,new)
+          src=src[:a]+part
+          p.write_text(src)
+          p=path("CPU.h","void exec86(uint32_t execloops")
+          edit(p,[("    void exec86(uint32_t execloops, uint16_t timing_interval);","    void exec86(uint32_t execloops, uint16_t timing_interval);\n    static void prismaProfileEnable(bool enabled);\n    static void prismaProfileRead(uint32_t *out);")])
+          print("PRISMA 072 bounded CPU profiler installed")
           print("Faux86 042 input patches applied")
           PY
       - name: Prepare DOS preview art
@@ -1249,13 +1324,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-071-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-071-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-071.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-072-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-072-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-072.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-071-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-072-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1264,6 +1339,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-071
+          name: PRISMA-RETRO-S3-072
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error

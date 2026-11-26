@@ -1292,6 +1292,9 @@ static uint64_t sceneTraceInstructions=0;
 static uint32_t sceneTracePrev[15]={};
 static SceneTraceSample sceneTraceSamples[24]={};
 static unsigned sceneTraceCount=0;
+static bool sceneCpuActive=false;
+static uint32_t sceneCpuHostUs=0,sceneCpuCaptureUs=0,sceneCpuCaptureN=0;
+static uint32_t sceneCpuSamples[24][25]={};
 static void sceneTraceCounters(uint32_t *v){
  v[0]=__atomic_load_n(&host.video.traceFrames,__ATOMIC_RELAXED);
  v[1]=__atomic_load_n(&host.video.traceJobs,__ATOMIC_RELAXED);
@@ -1306,12 +1309,29 @@ static void sceneTraceCounters(uint32_t *v){
 }
 bool dos_diag_scene_trace(){
  if(!vm||launcher||bootPhase||loadingGame||benchUntil||sceneTraceActive)return false;
+ sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);
  sceneTraceCount=0;sceneTraceStart=sceneTraceLast=millis();
  sceneTraceInstructions=vm->cpu.totalexec;sceneTraceCounters(sceneTracePrev);
  __atomic_store_n(&host.video.traceGapUs,0,__ATOMIC_RELAXED);
  __atomic_store_n(&host.video.traceStartUs,uint32_t(micros()),__ATOMIC_RELAXED);
  sceneTraceActive=true;
- Serial.println("071 TRACE START 12s - move now");return true;
+ Serial.println("072 TRACE START 12s - move now");return true;
+}
+bool dos_diag_cpu_profile(){
+ if(!dos_diag_scene_trace())return false;
+ sceneCpuHostUs=sceneCpuCaptureUs=sceneCpuCaptureN=0;
+ sceneCpuActive=true;Faux86::CPU::prismaProfileEnable(true);
+ Serial.println("CPU PROFILE ON (sampled dispatch; 12s)");return true;
+}
+static void sceneCpuPrint(const char *label,unsigned index){
+ const auto &v=sceneTraceSamples[index];const uint32_t *q=sceneCpuSamples[index];
+ Serial.printf("CPU %s t=%ums IPS %u FPS %.1f\n",label,v.at,v.ips,v.frames*1000.0/v.ms);
+ Serial.printf("HOST %ums/%ums CAP %uus n%u\n",q[22]/1000,v.ms,q[23],q[24]);
+ Serial.printf("SAMP %u REP %u IRQ %u HLT %u\n",q[0],q[1],q[2],q[7]);
+ Serial.printf("TICK %u us %u VGApoll %u\n",q[3],q[4],v.statusReads);
+ Serial.printf("REP batch %u iter %u bytes %u\n",q[9],q[6],q[5]);
+ Serial.printf("PC %04X:%04X=%u %04X:%04X=%u %04X:%04X=%u lost %u\n",q[10]>>16,q[10]&65535,q[11],q[12]>>16,q[12]&65535,q[13],q[14]>>16,q[14]&65535,q[15],q[8]);
+ Serial.printf("OP %02X=%u %02X=%u %02X=%u VRAM W%u R%u\n",q[16],q[17],q[18],q[19],q[20],q[21],v.writes,v.reads);
 }
 static void sceneTracePrint(const char *label,const SceneTraceSample &v){
  Serial.printf("%s %ums IPS %u FPS %.1f\n",label,v.at,v.ips,v.frames*1000.0/v.ms);
@@ -1323,11 +1343,12 @@ static void sceneTracePrint(const char *label,const SceneTraceSample &v){
 }
 static void sceneTraceTick(){
  if(!sceneTraceActive)return;
- if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("071 TRACE cancelled");return;}
+ if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("072 TRACE cancelled");return;}
  uint32_t now=millis(),dt=now-sceneTraceLast;
  if(dt<500)return;
  uint32_t cur[15];sceneTraceCounters(cur);
  uint64_t ins=vm->cpu.totalexec;
+ if(sceneCpuActive){auto *q=sceneCpuSamples[sceneTraceCount];Faux86::CPU::prismaProfileRead(q);q[22]=sceneCpuHostUs;q[23]=sceneCpuCaptureUs;q[24]=sceneCpuCaptureN;sceneCpuHostUs=sceneCpuCaptureUs=sceneCpuCaptureN=0;}
  auto &v=sceneTraceSamples[sceneTraceCount++];
  v={now-sceneTraceStart,dt,uint32_t((ins-sceneTraceInstructions)*1000ULL/dt),cur[0]-sceneTracePrev[0],cur[1]-sceneTracePrev[1],cur[2]-sceneTracePrev[2],cur[3]-sceneTracePrev[3],cur[4]-sceneTracePrev[4],cur[5]-sceneTracePrev[5],cur[6]-sceneTracePrev[6],cur[7]-sceneTracePrev[7],cur[8]-sceneTracePrev[8],cur[9]-sceneTracePrev[9],cur[10]-sceneTracePrev[10],cur[11]-sceneTracePrev[11],cur[12]-sceneTracePrev[12],cur[13]-sceneTracePrev[13],cur[14]-sceneTracePrev[14]};
  memcpy(sceneTracePrev,cur,sizeof(cur));sceneTraceInstructions=ins;sceneTraceLast=now;
@@ -1343,10 +1364,23 @@ static void sceneTraceTick(){
    const auto &h=sceneTraceSamples[heavy];
    if(q.jobs&&(!h.jobs||uint64_t(q.work)*h.jobs>uint64_t(h.work)*q.jobs))heavy=i;
  }
- Serial.printf("071 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
- sceneTracePrint("CPU MIN",sceneTraceSamples[slow]);
- sceneTracePrint("GFX MAX",sceneTraceSamples[heavy]);
- if(lowFps!=slow&&lowFps!=heavy)sceneTracePrint("FPS MIN",sceneTraceSamples[lowFps]);
+ Serial.printf("072 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
+ if(sceneCpuActive){
+   Faux86::CPU::prismaProfileEnable(false);sceneCpuActive=false;
+   uint32_t total[10]={},hostUs=0,capUs=0,capN=0;unsigned peakPoll=0,peakRep=0;
+   for(unsigned i=0;i<sceneTraceCount;i++){const uint32_t *q=sceneCpuSamples[i];for(unsigned j=0;j<10;j++)total[j]+=q[j];hostUs+=q[22];capUs+=q[23];capN+=q[24];if(sceneTraceSamples[i].statusReads>sceneTraceSamples[peakPoll].statusReads)peakPoll=i;if(q[1]>sceneCpuSamples[peakRep][1])peakRep=i;}
+   Serial.printf("CPU TOTAL host %ums cap %ums n%u samples %u REP %u IRQ %u\n",hostUs/1000,capUs/1000,capN,total[0],total[1],total[2]);
+   Serial.printf("TICK total %u us %u batch %u bytes %u\n",total[3],total[4],total[9],total[5]);
+   sceneCpuPrint("MIN IPS",slow);
+   if(lowFps!=slow)sceneCpuPrint("MIN FPS",lowFps);
+   if(peakPoll!=slow&&peakPoll!=lowFps)sceneCpuPrint("MAX POLL",peakPoll);
+   if(peakRep!=slow&&peakRep!=lowFps&&peakRep!=peakPoll)sceneCpuPrint("MAX REP",peakRep);
+   Serial.println("CPU PROFILE END");
+ }else{
+   sceneTracePrint("CPU MIN",sceneTraceSamples[slow]);
+   sceneTracePrint("GFX MAX",sceneTraceSamples[heavy]);
+   if(lowFps!=slow&&lowFps!=heavy)sceneTracePrint("FPS MIN",sceneTraceSamples[lowFps]);
+ }
  Serial.printf("TRACE jobs %u frames %u target 50Hz\n",jobs,frames);
  Serial.printf("MAX FRAME GAP %u ms (includes idle)\n",gap/1000);
  Serial.println("TRACE END");
@@ -1706,7 +1740,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 071 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 072 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1752,7 +1786,7 @@ void dos_tick(){
   servicePanel();
   static uint32_t maxSlice=0,maxCapture=0,captureTotalUs=0,captureN=0;
   static uint64_t simulateTotalUs=0;
-  if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;simulateTotalUs+=elapsed;++steps;
+  if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;simulateTotalUs+=elapsed;if(sceneCpuActive)sceneCpuHostUs+=elapsed;++steps;
     if(cursorWatch||cursorAuto)cursorAutoTick();
     if(keyScanBase)keyScanTick();
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
@@ -1762,7 +1796,7 @@ void dos_tick(){
       else if(!host.video.asyncReady()){vm->video.prismaDrawDue=false;vm->video.vga_drawCallback(0);}
       else if(host.video.acquire()){
         vm->video.prismaDrawDue=false;uint32_t rt=micros();
-        const bool captured=vm->video.prismaCapture();captureTotalUs+=micros()-rt;++captureN;
+        const bool captured=vm->video.prismaCapture();const uint32_t capElapsed=micros()-rt;captureTotalUs+=capElapsed;++captureN;if(sceneCpuActive){sceneCpuCaptureUs+=capElapsed;++sceneCpuCaptureN;}
         if(captured){captureBytes+=vm->video.prismaCaptureBytes();host.video.submit();}
         else{vm->video.vga_drawCallback(0);host.video.release();}
         uint32_t us=micros()-rt;if(us>maxCapture)maxCapture=us;
@@ -1841,7 +1875,7 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"071 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"072 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
@@ -1851,11 +1885,11 @@ void dos_tick(){
     diag_logf(true,"DOS GFX FUSED jobs=%u native_rows=%u px=%u/%u\n",fused,nativeRows,pixels,spanPixels);
     diag_logf(true,"DOS GFX REUSE rows=%u processed=%u\n",reused,sr);
     diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
-    diag_photo_line(6,"071 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(6,"072 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"071 MEM t=%us",millis()/1000);
+    diag_photo_line(10,"072 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
