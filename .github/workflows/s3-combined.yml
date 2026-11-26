@@ -1,7 +1,7 @@
-name: S3 Retro - build 068 combined
+name: S3 Retro - build 069 combined
 on:
   push:
-    branches: [build-068-vga-cpu]
+    branches: [build-069-vram-dirty-write]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -412,6 +412,77 @@ jobs:
           p.write_text(src)
           p=path("Video.h","prismaCaptureBytes()")
           edit(p,[("    uint32_t prismaCaptureBytes();","    uint32_t prismaCaptureBytes();\n    void prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f);")])
+          # 069: do not read PSRAM to test for a changed byte when the
+          # snapshot already needs to copy its entire dirty block anyway.
+          p=path("Video.cpp","prismaCapture()")
+          src=p.read_text()
+          marker="static uint32_t prismaVgaReads=0,prismaVgaWrites=0,prismaVgaFast=0;"
+          assert src.count(marker)==1
+          src=src.replace(marker,marker+"\nstatic uint32_t prismaVgaModes[4]={};",1)
+          old="static inline void prismaMark(unsigned plane,unsigned addr){unsigned block=(addr&65535)>>6;prismaDirty[plane][block>>5]|=1u<<(block&31);}"
+          assert src.count(old)==1
+          helper="""
+          static inline __attribute__((always_inline)) void prismaStore(unsigned plane,unsigned addr,uint8_t *dst,uint8_t v){
+            const unsigned block=(addr&65535)>>6;
+            uint32_t &word=prismaDirty[plane][block>>5];
+            const uint32_t bit=1u<<(block&31);
+            if(word&bit){*dst=v;return;}
+            if(*dst!=v){*dst=v;word|=bit;}
+          }
+          """
+          src=src.replace(old,old+helper,1)
+          start=src.index("void Video::vga_writememory(")
+          end=src.index("uint8_t Video::readVGA",start)
+          part=src[start:end]
+          for old,new in [
+            ("if(vga_RAM[addr & 1][addr >> 1]!=value){vga_RAM[addr & 1][addr >> 1]=value;prismaMark(addr&1,addr>>1);}","++prismaVgaModes[0];prismaStore(addr&1,addr>>1,vga_RAM[addr&1]+(addr>>1),value);"),
+            ("if(vga_RAM[addr & 3][addr >> 2]!=value){vga_RAM[addr & 3][addr >> 2]=value;prismaMark(addr&3,addr>>2);}","++prismaVgaModes[1];prismaStore(addr&3,addr>>2,vga_RAM[addr&3]+(addr>>2),value);"),
+            ("if(vga_RAM[plane][addr]!=temp){vga_RAM[plane][addr]=temp;prismaMark(plane,addr);}","prismaStore(plane,addr,vga_RAM[plane]+addr,temp);"),
+            ("if(vga_RAM[plane][addr]!=vga_latch[plane]){vga_RAM[plane][addr]=vga_latch[plane];prismaMark(plane,addr);}","prismaStore(plane,addr,vga_RAM[plane]+addr,vga_latch[plane]);"),
+            ("if(*dst!=v){*dst=v;prismaMark(p,addr);}","prismaStore(p,addr,dst,v);"),
+            ("  if(vga_wmode==0 &&","  if(vga_wmode==0)++prismaVgaModes[2];\n  else if(vga_wmode==1)++prismaVgaModes[3];\n  if(vga_wmode==0 &&"),
+          ]:
+              assert old in part,old
+              part=part.replace(old,new)
+          src=src[:start]+part+src[end:]
+          old="void Video::prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f)"
+          assert src.count(old)==1
+          src=src.replace(old,"void Video::prismaVgaModeCounts(uint32_t *out){memcpy(out,prismaVgaModes,sizeof(prismaVgaModes));}\n"+old,1)
+          # Differential test: exact helper, same bytes and dirty bitmap
+          # across repeated writes and snapshot resets.
+          from pathlib import Path
+          import subprocess
+          test=r'''
+          #include <cstdint>
+          #include <cstring>
+          #include <cstdlib>
+          #include <random>
+          static uint32_t prismaDirty[4][32]={};
+          static uint32_t oldDirty[4][32]={};
+          static uint8_t a[4][65536]={},b[4][65536]={};
+          '''+helper+r'''
+          int main(){
+            std::mt19937 rng(69);
+            for(unsigned i=0;i<1000000;++i){
+              unsigned p=rng()&3,addr=rng()&65535;
+              uint8_t v=(i&3)?uint8_t(rng()):a[p][addr];
+              if(a[p][addr]!=v){a[p][addr]=v;unsigned block=addr>>6;oldDirty[p][block>>5]|=1u<<(block&31);}
+              prismaStore(p,addr,&b[p][addr],v);
+              if(a[p][addr]!=b[p][addr])std::abort();
+              if(i%4096==0){
+                if(memcmp(a,b,sizeof(a))||memcmp(oldDirty,prismaDirty,sizeof(oldDirty)))std::abort();
+                memset(oldDirty,0,sizeof(oldDirty));memset(prismaDirty,0,sizeof(prismaDirty));
+              }
+            }
+            if(memcmp(a,b,sizeof(a))||memcmp(oldDirty,prismaDirty,sizeof(oldDirty)))std::abort();
+          }
+          '''
+          Path("/tmp/prisma069-vram.cpp").write_text(test)
+          subprocess.run(["g++","-O2","-std=c++17","/tmp/prisma069-vram.cpp","-o","/tmp/prisma069-vram"],check=True)
+          subprocess.run(["/tmp/prisma069-vram"],check=True)
+          p.write_text(src)
+          p=path("Video.h","prismaVgaCounts")
+          edit(p,[("    void prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f);","    void prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f);\n    void prismaVgaModeCounts(uint32_t *out);")])
           # 042: reuse previous RGB pixels for scanlines whose source VGA
           # blocks have not changed. Full redraw on mode/register/palette
           # changes and on unsupported layouts. The worker owns the RGB cache.
@@ -1162,13 +1233,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-068-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-068-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-068.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-069-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-069-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-069.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-068-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-069-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1177,6 +1248,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-068
+          name: PRISMA-RETRO-S3-069
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
