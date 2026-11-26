@@ -71,6 +71,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   int oldW=0,oldH=0,jobW=0,jobH=0,oldTop=0,jobTop=480;
   bool invalid=true,jobClear=false;
   int dirtyFirst=0,dirtyLast=0;
+  uint8_t changedRows[480]={};
   uint32_t viewport=0;
   SemaphoreHandle_t idle=nullptr;
   TaskHandle_t task=nullptr;
@@ -93,14 +94,37 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
     traceWorker(3);uint32_t t=micros();
     if(jobClear)dosLcd->fillRect(0,0,480,jobTop,0);
     const uint32_t copyStart=micros();
-    dosLcd->draw16bitRGBBitmap((480-jobW)/2,(jobTop-jobH)/2+dirtyFirst,cache+dirtyFirst*jobW,jobW,dirtyLast-dirtyFirst+1);
+    // Copy disjoint changed row runs, coalescing gaps of up to 2 rows.
+    // If heavily fragmented, use the previous bounding rectangle.
+    const int left=(480-jobW)/2,top=(jobTop-jobH)/2;
+    const unsigned span=unsigned(dirtyLast-dirtyFirst+1);
+    int starts[12],ends[12];unsigned runs=0,rows=0;
+    bool fallback=jobClear;
+    if(!fallback){
+      for(int y=dirtyFirst;y<=dirtyLast;++y){
+        if(!changedRows[y])continue;
+        if(runs&&y-ends[runs-1]<=3){ends[runs-1]=y;continue;}
+        if(runs==12){fallback=true;break;}
+        starts[runs]=ends[runs]=y;++runs;
+      }
+    }
+    if(fallback||!runs){
+      starts[0]=dirtyFirst;ends[0]=dirtyLast;runs=1;
+    }
+    for(unsigned i=0;i<runs;++i)rows+=unsigned(ends[i]-starts[i]+1);
+    // Avoid extra bitmap calls for very small savings.
+    if(runs>1&&rows*100>=span*85){starts[0]=dirtyFirst;ends[0]=dirtyLast;runs=1;rows=span;}
+    for(unsigned i=0;i<runs;++i)
+      dosLcd->draw16bitRGBBitmap(left,top+starts[i],cache+starts[i]*jobW,jobW,ends[i]-starts[i]+1);
+    __atomic_fetch_add(&profileSpanPixels,uint32_t(jobW)*span,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&profileRuns,runs,__ATOMIC_RELAXED);
     const uint32_t flushStart=micros();
     dosLcd->flush(true);
     const uint32_t done=micros();
     __atomic_fetch_add(&profileClearUs,copyStart-t,__ATOMIC_RELAXED);
     __atomic_fetch_add(&profileCopyUs,flushStart-copyStart,__ATOMIC_RELAXED);
     __atomic_fetch_add(&profileFlushUs,done-flushStart,__ATOMIC_RELAXED);
-    __atomic_fetch_add(&profilePixels,uint32_t(jobW)*uint32_t(dirtyLast-dirtyFirst+1),__ATOMIC_RELAXED);
+    __atomic_fetch_add(&profilePixels,uint32_t(jobW)*rows,__ATOMIC_RELAXED);
     __atomic_fetch_add(&profilePresentN,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);traceWorker(1);
@@ -110,6 +134,7 @@ public:
   uint32_t scaleUs=0,scaleCalls=0,scaleRows=0,scalePossible=0;
   uint32_t profileWorkerUs=0,profileRasterUs=0,profileJobs=0;
   uint32_t profileClearUs=0,profileCopyUs=0,profileFlushUs=0,profilePixels=0,profilePresentN=0;
+  uint32_t profileSpanPixels=0,profileRuns=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -145,6 +170,7 @@ public:
     if(w!=oldW||h!=oldH||top!=oldTop){force=true;oldW=w;oldH=h;oldTop=top;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
     traceWorker(2);const uint32_t scaleStart=micros();uint32_t lastCooperate=scaleStart;
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
+    memset(changedRows,0,dh);
     int prevY=-1;
     unsigned processed=0;
     const bool useHints=prismaScaleDirtyValid&&!force&&pixels==vga_framebuffer;
@@ -170,7 +196,7 @@ public:
         prevY=ymap[y];
       }
       uint16_t *prev=cache+y*dw;
-      if(force||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;}
+      if(force||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;changedRows[y]=1;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;}
     }
     __atomic_fetch_add(&scaleUs,micros()-scaleStart,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scaleCalls,1,__ATOMIC_RELAXED);
@@ -1451,7 +1477,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 060A DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 061 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1573,6 +1599,8 @@ void dos_tick(){
     const uint32_t copyUs=__atomic_exchange_n(&host.video.profileCopyUs,0,__ATOMIC_RELAXED);
     const uint32_t flushUs=__atomic_exchange_n(&host.video.profileFlushUs,0,__ATOMIC_RELAXED);
     const uint32_t pixels=__atomic_exchange_n(&host.video.profilePixels,0,__ATOMIC_RELAXED);
+    const uint32_t spanPixels=__atomic_exchange_n(&host.video.profileSpanPixels,0,__ATOMIC_RELAXED);
+    const uint32_t runs=__atomic_exchange_n(&host.video.profileRuns,0,__ATOMIC_RELAXED);
     diag_logf(true,"DOS GFX jobs=%u capture_n=%u capture_avg=%u worker_avg=%u raster_est=%u\n",jobs,captureN,captureN?captureTotalUs/captureN:0,jobs?workerUs/jobs:0,jobs?rasterUs/jobs:0);
     diag_logf(true,"DOS GFX LCD n=%u clear_avg=%u copy_avg=%u flush_avg=%u pixels_avg=%u\n",presents,presents?clearUs/presents:0,presents?copyUs/presents:0,presents?flushUs/presents:0,presents?pixels/presents:0);
     // Same interval and existing stage counters; no additional render or scan.
@@ -1580,17 +1608,18 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"060A GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"061 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
     diag_photo_line(4,"frames %u jobs %u busy %u",shown,jobs,gfxBusy);
-    diag_photo_line(5,"rows R %u/%u S %u/%u",rasterRows,rasterPossible,sr,sp);
-    diag_photo_line(6,"060A INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(5,"px %u/%u runs %u",pixels,spanPixels,runs);
+    diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
+    diag_photo_line(6,"061 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"060A MEM t=%us",millis()/1000);
+    diag_photo_line(10,"061 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));

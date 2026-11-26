@@ -411,7 +411,7 @@ static bool load(const String &p){
 }
 #ifdef PRISMA_COMBINED
 void prisma_diag_status(){
- Serial.printf("PRISMA STATUS build=060A mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
+ Serial.printf("PRISMA STATUS build=061 mode=%s playing=%d cpu_mhz=%u uptime_ms=%u reset=%d\n",dosActive?"DOS":playing?(nesMode?"NES":"GB"):home?"HOME":"SELECTOR",playing|| (dosActive&&!dos_in_launcher()),getCpuFrequencyMhz(),millis(),(int)esp_reset_reason());
 }
 bool prisma_diag_bench(){return dosActive&&dos_diag_bench();}
 #endif
@@ -421,7 +421,7 @@ void setup(){
 #endif
   Serial.begin(115200);delay(200);
 #ifdef PRISMA_COMBINED
-  Serial.printf("BUILD 060A RESET reason=%d\n",(int)esp_reset_reason());
+  Serial.printf("BUILD 061 RESET reason=%d\n",(int)esp_reset_reason());
   diag_begin();dos_report_reset();
 #endif
   Serial.printf("CPU MHz=%u\n",getCpuFrequencyMhz());
@@ -471,7 +471,7 @@ void loop(){
     const Point points[1]={dosTouchCurrent.p};
     if(guardRebootTouch(touchFresh?npoints:1)){dos_tick();return;}
     static uint32_t touchStats=0;
-    if(millis()-touchStats>=3000){touchStats=millis();Serial.printf("DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
+    if(millis()-touchStats>=3000){touchStats=millis();diag_logf(true,"DOS TOUCH queue=%u dropped=%u\n",dosTouchQueue?(unsigned)uxQueueMessagesWaiting(dosTouchQueue):0,(unsigned)__atomic_load_n(&dosTouchDrops,__ATOMIC_RELAXED));}
     // A single touch belongs to the game (including the top-right).
     // Exit only through the toolbar or a deliberate two-finger right
     // hold, confirmed by a fresh release. Never reboot on stale input.

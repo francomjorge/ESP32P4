@@ -26,12 +26,12 @@ static bool matches(LogMode m,const char *s){
  if(m==LOG_ALL)return true;
  if(m==LOG_OFF)return false;
  if(m==LOG_GFX)return prefix(s,"DOS GFX")||prefix(s,"DOS PERF")||prefix(s,"DOS SLICE")||prefix(s,"DOS SCALE")||prefix(s,"DOS RASTER")||prefix(s,"DOS VGA")||prefix(s,"VIDEO PERF")||prefix(s,"PERF ");
- if(m==LOG_INPUT)return prefix(s,"DOS INPUT")||prefix(s,"DOS TEXT INPUT")||prefix(s,"DOS MOUSE")||prefix(s,"DOS RAM TOUCH")||prefix(s,"DOS OVERLAY")||prefix(s,"DOS ACTION");
+ if(m==LOG_INPUT)return prefix(s,"DOS INPUT")||prefix(s,"DOS TEXT INPUT")||prefix(s,"DOS MOUSE")||prefix(s,"DOS RAM TOUCH")||prefix(s,"DOS OVERLAY")||prefix(s,"DOS ACTION")||prefix(s,"DOS TOUCH");
  return prefix(s,"DOS STACK")||prefix(s,"PRISMA MEM");
 }
 static void exportPhoto(unsigned first,unsigned end){
  live=LOG_OFF;
- if(!photo[first][0]){Serial.println("060A PHOTO no DOS sample yet; wait 3s and retry");return;}
+ if(!photo[first][0]){Serial.println("061 PHOTO no DOS sample yet; wait 3s and retry");return;}
  for(unsigned i=first;i<end;++i)Serial.println(photo[i]);
  Serial.println("PHOTO END (logs off)");
 }
@@ -86,7 +86,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 060A reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 061 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);
