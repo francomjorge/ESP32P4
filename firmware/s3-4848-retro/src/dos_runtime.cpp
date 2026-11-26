@@ -70,7 +70,19 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   uint16_t *cache=nullptr;
   uint16_t *sourceRow=nullptr;
   uint16_t xmap[480],ymap[480],row[480];
-  alignas(4) uint8_t planeRow[4][80];
+  alignas(4) uint8_t planeRow[4][80],previousPlaneRow[4][80];
+  uint16_t segmentEdge[11];
+  uint32_t lastPresentUs=0;
+  void recordPresent(){
+    const uint32_t now=micros(),start=__atomic_load_n(&traceStartUs,__ATOMIC_RELAXED);
+    if(start&&lastPresentUs&&int32_t(lastPresentUs-start)>=0){
+      const uint32_t gap=now-lastPresentUs;
+      uint32_t old=__atomic_load_n(&traceGapUs,__ATOMIC_RELAXED);
+      while(gap>old&&!__atomic_compare_exchange_n(&traceGapUs,&old,gap,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){}
+    }
+    lastPresentUs=now;
+    __atomic_fetch_add(&traceFrames,1,__ATOMIC_RELAXED);
+  }
   alignas(4) uint16_t localPalette[256];
   int oldW=0,oldH=0,jobW=0,jobH=0,oldTop=0,jobTop=480;
   bool invalid=true,jobClear=false,directMode=false;
@@ -133,7 +145,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
     __atomic_fetch_add(&profilePixels,uint32_t(jobW)*rows,__ATOMIC_RELAXED);
     __atomic_fetch_add(&profilePresentN,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);
-    __atomic_fetch_add(&traceFrames,1,__ATOMIC_RELAXED);
+    recordPresent();
     __atomic_fetch_add(&work,micros()-t,__ATOMIC_RELAXED);traceWorker(1);
   }
 public:
@@ -143,6 +155,7 @@ public:
   uint32_t profileClearUs=0,profileCopyUs=0,profileFlushUs=0,profilePixels=0,profilePresentN=0;
   uint32_t profileSpanPixels=0,profileRuns=0,fusedFrames=0,fusedRows=0,directJobs=0;
   uint32_t traceJobs=0,traceFrames=0,traceWorkerUs=0,traceRows=0,traceFull=0;
+  uint32_t traceSpanPixels=0,traceCandidatePixels=0,traceStartUs=0,traceGapUs=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -185,11 +198,13 @@ public:
       force=true;oldW=w;oldH=h;oldTop=top;
       for(int x=0;x<dw;x++)xmap[x]=x*w/dw;
       for(int y=0;y<dh;y++)ymap[y]=y*h/dh;
+      int edge=0;for(unsigned k=0;k<=10;++k){while(edge<dw&&(xmap[edge]>>1)<k*32)++edge;segmentEdge[k]=edge;}
       Serial.printf("DOS VIDEO %dx%d -> %dx%d fused\n",w,h,dw,dh);
     }
     traceWorker(2);
     dirtyFirst=dh;dirtyLast=-1;memset(changedRows,0,dh);
     int prevY=-1;unsigned processed=0,reused=0,decoded=0,written=0;
+    unsigned mask=0,convertedPixels=0,candidatePixels=0,writtenPixels=0;
     uint32_t cooperate=t,clearTime=0;
     bool paletteStaged=false;
     const int left=(480-dw)/2,upper=(top-dh)/2;
@@ -213,19 +228,50 @@ public:
           memcpy(planeRow[p],planes[p]+base,first);
           if(first<80)memcpy(planeRow[p]+first,planes[p],80-first);
         }
-        for(unsigned a=0,x=0;a<80;++a,x+=4){
-          sourceRow[x]=localPalette[planeRow[0][a]];
-          sourceRow[x+1]=localPalette[planeRow[1][a]];
-          sourceRow[x+2]=localPalette[planeRow[2][a]];
-          sourceRow[x+3]=localPalette[planeRow[3][a]];
+        // Direct path does not use the old RGB cache. Reuse its first
+        // 64 KiB as the previous native planar image (200*4*80 bytes).
+        // Mode, viewport and palette transitions already force full redraw.
+        mask=1023;
+        if(direct){
+          uint8_t *prior=reinterpret_cast<uint8_t*>(cache)+sy*sizeof(planeRow);
+          if(!force){
+            memcpy(previousPlaneRow,prior,sizeof(planeRow));
+            mask=0;
+            for(unsigned k=0;k<10;++k){
+              const unsigned a=k*8;
+              for(unsigned p=0;p<4;++p)if(memcmp(previousPlaneRow[p]+a,planeRow[p]+a,8)){mask|=1u<<k;break;}
+            }
+          }
+          if(mask)memcpy(prior,planeRow,sizeof(planeRow));
+          // A dense change is cheaper as one contiguous row.
+          if(__builtin_popcount(mask)>=7)mask=1023;
         }
-        for(int x=0;x<dw;x++)row[x]=sourceRow[xmap[x]>>1];
+        for(unsigned k=0;k<10;++k)if(mask&(1u<<k)){
+          for(unsigned a=k*8;a<(k+1)*8;++a){
+            const unsigned x=a*4;
+            sourceRow[x]=localPalette[planeRow[0][a]];
+            sourceRow[x+1]=localPalette[planeRow[1][a]];
+            sourceRow[x+2]=localPalette[planeRow[2][a]];
+            sourceRow[x+3]=localPalette[planeRow[3][a]];
+          }
+          for(unsigned x=segmentEdge[k];x<segmentEdge[k+1];++x)row[x]=sourceRow[xmap[x]>>1];
+        }
         prevY=sy;++decoded;
       }else ++reused;
+      candidatePixels+=dw;
       uint16_t *prev=direct?lcdFrame+(upper+y)*480+left:cache+y*dw;
-      if(force||memcmp(prev,row,dw*2)){
-        memcpy(prev,row,dw*2);changedRows[y]=1;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;++written;
+      bool changed=false;
+      for(unsigned k=0;k<10;){
+        if(!(mask&(1u<<k))){++k;continue;}
+        const unsigned first=k;
+        do{++k;}while(k<10&&(mask&(1u<<k)));
+        const unsigned x=segmentEdge[first],n=segmentEdge[k]-x;
+        convertedPixels+=n;
+        if(n&&(force||memcmp(prev+x,row+x,n*2))){
+          memcpy(prev+x,row+x,n*2);writtenPixels+=n;changed=true;
+        }
       }
+      if(changed){changedRows[y]=1;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;++written;}
     }
     const uint32_t elapsed=micros()-t;
     __atomic_fetch_add(&scaleUs,elapsed,__ATOMIC_RELAXED);
@@ -236,6 +282,8 @@ public:
     __atomic_fetch_add(&fusedFrames,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&fusedRows,decoded,__ATOMIC_RELAXED);
     __atomic_fetch_add(&traceRows,decoded,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&traceSpanPixels,convertedPixels,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&traceCandidatePixels,candidatePixels,__ATOMIC_RELAXED);
     if(force)__atomic_fetch_add(&traceFull,1,__ATOMIC_RELAXED);
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
@@ -249,11 +297,11 @@ public:
         __atomic_fetch_add(&profileClearUs,clearTime,__ATOMIC_RELAXED);
         __atomic_fetch_add(&profileFlushUs,flushTime,__ATOMIC_RELAXED);
         // Direct row writes are already counted in scaleUs. No second copy.
-        __atomic_fetch_add(&profilePixels,uint32_t(dw)*written,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&profilePixels,writtenPixels,__ATOMIC_RELAXED);
         __atomic_fetch_add(&profileSpanPixels,uint32_t(dw)*unsigned(dirtyLast-dirtyFirst+1),__ATOMIC_RELAXED);
         __atomic_fetch_add(&profilePresentN,1,__ATOMIC_RELAXED);
         __atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);
-    __atomic_fetch_add(&traceFrames,1,__ATOMIC_RELAXED);
+    recordPresent();
         __atomic_fetch_add(&work,flushTime+clearTime,__ATOMIC_RELAXED);
       }else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
     }else if(dirtyLast>=dirtyFirst)present();else __atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);
@@ -1237,11 +1285,11 @@ void dos_cursor_scan(const char *arg){
  cursorFilter(dx,dy,arg);
 }
 // Short-window recording, no UART traffic during the measurement itself.
-struct SceneTraceSample {uint32_t at,ms,ips,frames,jobs,work,rows,full,reads,writes,fast,odd,chain,mode0,mode1,statusReads;};
+struct SceneTraceSample {uint32_t at,ms,ips,frames,jobs,work,rows,full,reads,writes,fast,odd,chain,mode0,mode1,statusReads,spanPixels,candidatePixels;};
 static bool sceneTraceActive=false;
 static uint32_t sceneTraceStart=0,sceneTraceLast=0;
 static uint64_t sceneTraceInstructions=0;
-static uint32_t sceneTracePrev[13]={};
+static uint32_t sceneTracePrev[15]={};
 static SceneTraceSample sceneTraceSamples[24]={};
 static unsigned sceneTraceCount=0;
 static void sceneTraceCounters(uint32_t *v){
@@ -1253,13 +1301,17 @@ static void sceneTraceCounters(uint32_t *v){
  vm->video.prismaVgaCounts(v[5],v[6],v[7]);
  vm->video.prismaVgaModeCounts(v+8);
  v[12]=vm->video.prismaVgaStatusReads();
+ v[13]=__atomic_load_n(&host.video.traceSpanPixels,__ATOMIC_RELAXED);
+ v[14]=__atomic_load_n(&host.video.traceCandidatePixels,__ATOMIC_RELAXED);
 }
 bool dos_diag_scene_trace(){
  if(!vm||launcher||bootPhase||loadingGame||benchUntil||sceneTraceActive)return false;
  sceneTraceCount=0;sceneTraceStart=sceneTraceLast=millis();
  sceneTraceInstructions=vm->cpu.totalexec;sceneTraceCounters(sceneTracePrev);
+ __atomic_store_n(&host.video.traceGapUs,0,__ATOMIC_RELAXED);
+ __atomic_store_n(&host.video.traceStartUs,uint32_t(micros()),__ATOMIC_RELAXED);
  sceneTraceActive=true;
- Serial.println("070 TRACE START 12s - move now");return true;
+ Serial.println("071 TRACE START 12s - move now");return true;
 }
 static void sceneTracePrint(const char *label,const SceneTraceSample &v){
  Serial.printf("%s %ums IPS %u FPS %.1f\n",label,v.at,v.ips,v.frames*1000.0/v.ms);
@@ -1267,19 +1319,22 @@ static void sceneTracePrint(const char *label,const SceneTraceSample &v){
  Serial.printf("VRAM R %u W %u fast %u\n",v.reads,v.writes,v.fast);
  Serial.printf("MODE odd %u chain %u m0 %u m1 %u\n",v.odd,v.chain,v.mode0,v.mode1);
  Serial.printf("VGA STATUS %u\n",v.statusReads);
+ Serial.printf("SPAN px %u/%u\n",v.spanPixels,v.candidatePixels);
 }
 static void sceneTraceTick(){
  if(!sceneTraceActive)return;
- if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;Serial.println("070 TRACE cancelled");return;}
+ if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("071 TRACE cancelled");return;}
  uint32_t now=millis(),dt=now-sceneTraceLast;
  if(dt<500)return;
- uint32_t cur[13];sceneTraceCounters(cur);
+ uint32_t cur[15];sceneTraceCounters(cur);
  uint64_t ins=vm->cpu.totalexec;
  auto &v=sceneTraceSamples[sceneTraceCount++];
- v={now-sceneTraceStart,dt,uint32_t((ins-sceneTraceInstructions)*1000ULL/dt),cur[0]-sceneTracePrev[0],cur[1]-sceneTracePrev[1],cur[2]-sceneTracePrev[2],cur[3]-sceneTracePrev[3],cur[4]-sceneTracePrev[4],cur[5]-sceneTracePrev[5],cur[6]-sceneTracePrev[6],cur[7]-sceneTracePrev[7],cur[8]-sceneTracePrev[8],cur[9]-sceneTracePrev[9],cur[10]-sceneTracePrev[10],cur[11]-sceneTracePrev[11],cur[12]-sceneTracePrev[12]};
+ v={now-sceneTraceStart,dt,uint32_t((ins-sceneTraceInstructions)*1000ULL/dt),cur[0]-sceneTracePrev[0],cur[1]-sceneTracePrev[1],cur[2]-sceneTracePrev[2],cur[3]-sceneTracePrev[3],cur[4]-sceneTracePrev[4],cur[5]-sceneTracePrev[5],cur[6]-sceneTracePrev[6],cur[7]-sceneTracePrev[7],cur[8]-sceneTracePrev[8],cur[9]-sceneTracePrev[9],cur[10]-sceneTracePrev[10],cur[11]-sceneTracePrev[11],cur[12]-sceneTracePrev[12],cur[13]-sceneTracePrev[13],cur[14]-sceneTracePrev[14]};
  memcpy(sceneTracePrev,cur,sizeof(cur));sceneTraceInstructions=ins;sceneTraceLast=now;
  if(sceneTraceCount<24&&now-sceneTraceStart<12000)return;
  sceneTraceActive=false;
+ __atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);
+ const uint32_t gap=__atomic_load_n(&host.video.traceGapUs,__ATOMIC_RELAXED);
  unsigned slow=0,heavy=0,lowFps=0;uint32_t frames=0,ms=0,full=0,jobs=0;
  for(unsigned i=0;i<sceneTraceCount;i++){
    const auto &q=sceneTraceSamples[i];frames+=q.frames;ms+=q.ms;full+=q.full;jobs+=q.jobs;
@@ -1288,11 +1343,12 @@ static void sceneTraceTick(){
    const auto &h=sceneTraceSamples[heavy];
    if(q.jobs&&(!h.jobs||uint64_t(q.work)*h.jobs>uint64_t(h.work)*q.jobs))heavy=i;
  }
- Serial.printf("070 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
+ Serial.printf("071 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
  sceneTracePrint("CPU MIN",sceneTraceSamples[slow]);
  sceneTracePrint("GFX MAX",sceneTraceSamples[heavy]);
  if(lowFps!=slow&&lowFps!=heavy)sceneTracePrint("FPS MIN",sceneTraceSamples[lowFps]);
  Serial.printf("TRACE jobs %u frames %u target 50Hz\n",jobs,frames);
+ Serial.printf("MAX FRAME GAP %u ms (includes idle)\n",gap/1000);
  Serial.println("TRACE END");
 }
 bool dos_diag_bench(){
@@ -1650,7 +1706,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 070 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 071 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1785,7 +1841,7 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"070 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"071 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
@@ -1795,11 +1851,11 @@ void dos_tick(){
     diag_logf(true,"DOS GFX FUSED jobs=%u native_rows=%u px=%u/%u\n",fused,nativeRows,pixels,spanPixels);
     diag_logf(true,"DOS GFX REUSE rows=%u processed=%u\n",reused,sr);
     diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
-    diag_photo_line(6,"070 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(6,"071 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"070 MEM t=%us",millis()/1000);
+    diag_photo_line(10,"071 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));

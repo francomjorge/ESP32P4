@@ -32,7 +32,7 @@ static bool matches(LogMode m,const char *s){
 }
 static void exportPhoto(unsigned first,unsigned end){
  live=LOG_OFF;
- if(!photo[first][0]){Serial.println("070 PHOTO no DOS sample yet; wait 3s and retry");return;}
+ if(!photo[first][0]){Serial.println("071 PHOTO no DOS sample yet; wait 3s and retry");return;}
  for(unsigned i=first;i<end;++i)Serial.println(photo[i]);
  Serial.println("PHOTO END (logs off)");
 }
@@ -77,7 +77,7 @@ static void runCommand(){
  else if(!strcmp(line,"tasks"))Serial.printf("PRISMA TASKS count=%u loop_core=%d loop_stack=%u\n",(unsigned)uxTaskGetNumberOfTasks(),xPortGetCoreID(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
  else if(!strcmp(line,"debug on")){live=LOG_ALL;Serial.println("PRISMA DEBUG ON");}
  else if(!strcmp(line,"debug off")){live=LOG_OFF;Serial.println("PRISMA DEBUG OFF (history retained)");}
- else if(!strcmp(line,"trace")){live=LOG_OFF;if(!dos_diag_scene_trace())Serial.println("070 TRACE unavailable");}
+ else if(!strcmp(line,"trace")){live=LOG_OFF;if(!dos_diag_scene_trace())Serial.println("071 TRACE unavailable");}
  else if(!strcmp(line,"bench")){if(!prisma_diag_bench())Serial.println("PRISMA BENCH unavailable: enter a DOS game or console first");}
  else if(!strncmp(line,"cursor ",7))dos_cursor_scan(line+7);
  else if(!strncmp(line,"clave ",6))dos_key_scan(line+6);
