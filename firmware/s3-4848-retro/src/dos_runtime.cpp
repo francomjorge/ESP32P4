@@ -545,9 +545,66 @@ static void cursorProbe(int x,int y,bool logicalOnly){
  cursorWatchLog(logicalOnly?"writeX":"writeXY",0);
  cursorProbeStart=millis();cursorProbePhase=1;
 }
+// Find the logical Y by equality with the observed graphical Y minus 9.
+// The snapshot is coherent on the guest task; filtering is incremental.
+static uint8_t *cursorYSnapshot=nullptr,*cursorYMasks=nullptr;
+static uint32_t cursorYIndex=0,cursorYCounts[2]={},cursorYAddr[2][24]={};
+static unsigned cursorYRounds=0,cursorYExpected=0,cursorYLast=0;
+static bool cursorYBusy=false,cursorYActive=false;
+static uint32_t cursorYDue=0;
+static void cursorYFree(){
+ free(cursorYSnapshot);free(cursorYMasks);cursorYSnapshot=cursorYMasks=nullptr;
+ cursorYBusy=cursorYActive=false;cursorYRounds=0;cursorYDue=0;
+}
+static void cursorYList(){
+ if(!cursorYActive){Serial.println("DOS YFIND inactive");return;}
+ if(cursorYBusy){Serial.printf("DOS YFIND busy %u/%u\n",cursorYIndex,CURSOR_RAM_N-1);return;}
+ Serial.printf("DOS YFIND count rounds=%u y=%u Y16=%u Y8=%u\n",cursorYRounds,cursorYLast,cursorYCounts[0],cursorYCounts[1]);
+ for(unsigned m=0;m<2;++m)for(unsigned n=0;n<min(cursorYCounts[m],24u);++n){
+   const uint32_t a=cursorYAddr[m][n];
+   Serial.printf("DOS YFIND %s addr=%05lx value=%u deltaX=%ld\n",m?"Y8":"Y16",(unsigned long)a,m?unsigned(vm->memory.readByte(a)):cursorWatchWord(a),long(a)-long(cursorLogicalX));
+ }
+}
+static void cursorYSample(){
+ if(cursorYBusy||!cursorProbeSafe())return;
+ unsigned y=cursorWatchWord(cursorRenderY)-9;
+ if(cursorYRounds&&y==cursorYLast)return;
+ if(!cursorYSnapshot){
+   cursorYSnapshot=(uint8_t*)ps_malloc(CURSOR_RAM_N);
+   cursorYMasks=(uint8_t*)ps_malloc(2*CURSOR_MASK_N);
+   if(!cursorYSnapshot||!cursorYMasks){cursorYFree();Serial.println("DOS YFIND allocation failed");return;}
+   memset(cursorYMasks,0,2*CURSOR_MASK_N);
+ }
+ const uint32_t start=micros();
+ memcpy(cursorYSnapshot,vm->memory.RAM+CURSOR_RAM_BASE,CURSOR_RAM_N);
+ cursorYExpected=y;cursorYIndex=0;cursorYCounts[0]=cursorYCounts[1]=0;cursorYBusy=true;
+ Serial.printf("DOS YFIND sample y=%u x=%u snapshot_us=%u\n",y,cursorWatchWord(cursorLogicalX),micros()-start);
+}
+static void cursorYSlice(){
+ if(!cursorYBusy)return;
+ const uint32_t end=min(CURSOR_RAM_N-1,cursorYIndex+8192u);
+ for(unsigned m=0;m<2;++m){
+   uint8_t *mask=cursorYMasks+m*CURSOR_MASK_N;
+   for(uint32_t i=cursorYIndex;i<end;++i){
+     const uint8_t bit=uint8_t(1u<<(i&7));
+     if(cursorYRounds&&!(mask[i>>3]&bit))continue;
+     const unsigned val=m?unsigned(cursorYSnapshot[i]):unsigned(cursorYSnapshot[i])|(unsigned(cursorYSnapshot[i+1])<<8);
+     if(val!=cursorYExpected){mask[i>>3]&=uint8_t(~bit);continue;}
+     mask[i>>3]|=bit;
+     if(cursorYCounts[m]<24)cursorYAddr[m][cursorYCounts[m]]=CURSOR_RAM_BASE+i;
+     ++cursorYCounts[m];
+   }
+ }
+ cursorYIndex=end;
+ if(end!=CURSOR_RAM_N-1)return;
+ ++cursorYRounds;cursorYLast=cursorYExpected;cursorYBusy=false;
+ // Avoid flooding the terminal while hundreds of candidates remain.
+ Serial.printf("DOS YFIND count rounds=%u y=%u Y16=%u Y8=%u\n",cursorYRounds,cursorYLast,cursorYCounts[0],cursorYCounts[1]);
+ if(cursorYRounds>=3&&cursorYCounts[0]<=24&&cursorYCounts[1]<=24)cursorYList();
+}
 static void cursorWatchTick(){
  if(!cursorWatch)return;
- if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){cursorWatch=false;cursorWatchKey=0;cursorProbePhase=0;return;}
+ if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){cursorWatch=false;cursorWatchKey=0;cursorProbePhase=0;cursorYFree();return;}
  if(cursorProbePhase){
    const uint32_t elapsed=millis()-cursorProbeStart;
    const unsigned due=cursorProbePhase==1?100:cursorProbePhase==2?500:1000;
@@ -559,9 +616,19 @@ static void cursorWatchTick(){
  }
  const uint8_t k=held;
  const bool arrow=k==77||k==75||k==80||k==72;
- if(cursorWatchKey&&(!arrow||k!=cursorWatchKey)){cursorWatchLog("release",cursorWatchKey);cursorWatchKey=0;}
+ if(cursorWatchKey&&(!arrow||k!=cursorWatchKey)){
+   cursorWatchLog("release",cursorWatchKey);
+   if(cursorYActive&&(cursorWatchKey==72||cursorWatchKey==80))cursorYDue=millis()+220;
+   cursorWatchKey=0;
+ }
  if(arrow&&k!=cursorWatchKey){cursorWatchKey=k;cursorWatchLog("hold",k);cursorWatchNext=millis()+150;}
  else if(arrow&&int32_t(millis()-cursorWatchNext)>=0){cursorWatchLog("live",k);cursorWatchNext=millis()+150;}
+ if(cursorYActive){
+   cursorYSlice();
+   if(cursorYDue&&!held&&!cursorYBusy&&int32_t(millis()-cursorYDue)>=0){
+     cursorYDue=0;cursorYSample();
+   }
+ }
 }
 static bool cursorAuto=false,cursorAutoFiltered=false;
 static uint8_t cursorAutoArrow=0;
@@ -576,6 +643,7 @@ static const char *cursorAxis(unsigned m){return m==0?"X16":m==1?"Y16":m==2?"X8"
 static const char *cursorArrowName(uint8_t k){return k==77?"right":k==75?"left":k==80?"down":"up";}
 static bool cursorIsArrow(uint8_t k){return k==77||k==75||k==80||k==72;}
 static void cursorRamFree(){
+ cursorYFree();
  free(cursorRamPrev);free(cursorRamNow);free(cursorMasks);
  cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;cursorWatch=false;cursorWatchKey=0;cursorProbePhase=0;cursorFilterBusy=false;cursorFilterIndex=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
 }
@@ -719,6 +787,14 @@ void dos_cursor_scan(const char *arg){
    cursorWatchLog("baseline",0);return;
  }
  if(cursorWatch&&!strcmp(arg,"list")){cursorWatchLog("manual",0);return;}
+ if(!strcmp(arg,"yfind")){
+   if(!cursorProbeSafe()){Serial.println("DOS YFIND requires :cursor watch and stationary cursor");return;}
+   if(!cursorYActive){cursorYActive=true;cursorYSample();Serial.println("DOS YFIND move up/down, release and wait for count");}
+   else if(cursorYBusy)cursorYList();
+   else cursorYSample();
+   return;
+ }
+ if(!strcmp(arg,"ylist")){cursorYList();return;}
  if(!strncmp(arg,"test ",5)){
    int x,y;char tail;
    if(sscanf(arg+5,"%d %d %c",&x,&y,&tail)!=2){Serial.println("DOS RAM PROBE use :cursor test X Y");return;}
@@ -965,7 +1041,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R5 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R6 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
