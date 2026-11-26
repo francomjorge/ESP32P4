@@ -511,6 +511,10 @@ static unsigned cursorRounds=0;
 static bool cursorWatch=false;
 static uint8_t cursorWatchKey=0;
 static uint32_t cursorWatchNext=0;
+// Explicit one-shot experiments only. No touch-driven writes and no persistence.
+static uint32_t cursorProbeStart=0;
+static unsigned cursorProbePhase=0;
+static constexpr uint32_t cursorRenderX=0x2e5f0,cursorRenderY=0x2e5f2,cursorLogicalX=0x30df4;
 static constexpr uint32_t cursorWatchAddresses[]={0x2e5f0,0x2e5f2,0x30df4,0x33fb4,0x2e5fb,0x2ed74};
 static unsigned cursorWatchWord(uint32_t a){
  return unsigned(vm->memory.readByte(a))|(unsigned(vm->memory.readByte(a+1))<<8);
@@ -518,11 +522,41 @@ static unsigned cursorWatchWord(uint32_t a){
 static void cursorWatchLog(const char *event,uint8_t key){
  unsigned v[6];
  for(unsigned i=0;i<6;++i)v[i]=cursorWatchWord(cursorWatchAddresses[i]);
- Serial.printf("DOS RAM WATCH %s key=%u XY=%u,%u Xalt=%u,%u Yalt=%u,%u\n",event,(unsigned)key,v[0],v[1],v[2],v[3],v[4],v[5]);
+ Serial.printf("DOS RAM WATCH %s key=%u XY=%d,%u Xalt=%u,%u Yalt=%u,%u nextY=%u\n",event,(unsigned)key,int(int16_t(v[0])),v[1],v[2],v[3],v[4],v[5],cursorWatchWord(0x30df6));
+}
+static bool cursorProbeSafe(){
+ if(!cursorWatch||!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending||held||cursorProbePhase)return false;
+ const int x=int(int16_t(cursorWatchWord(cursorRenderX)));
+ const unsigned y=cursorWatchWord(cursorRenderY),lx=cursorWatchWord(cursorLogicalX);
+ // Require the exact relation and limits established by the four-corner test.
+ // This is a heuristic guard, not a game version/signature check.
+ return x>=-8&&x<=311&&y>=9&&y<=208&&lx<=319&&int(lx)==x+8;
+}
+static void cursorProbe(int x,int y,bool logicalOnly){
+ if(x<0||x>319||(!logicalOnly&&(y<0||y>199))){Serial.println("DOS RAM PROBE rejected: logical range X=0..319 Y=0..199");return;}
+ if(!cursorProbeSafe()){Serial.println("DOS RAM PROBE rejected: watch must be active, cursor idle, observed bounds and X relation must match");return;}
+ cursorWatchLog("before",0);
+ if(logicalOnly){
+   vm->memory.writeWord(cursorLogicalX,uint16_t(x));
+ }else{
+   vm->memory.writeWord(cursorRenderX,uint16_t(int16_t(x-8)));
+   vm->memory.writeWord(cursorRenderY,uint16_t(y+9));
+ }
+ cursorWatchLog(logicalOnly?"writeX":"writeXY",0);
+ cursorProbeStart=millis();cursorProbePhase=1;
 }
 static void cursorWatchTick(){
  if(!cursorWatch)return;
- if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){cursorWatch=false;cursorWatchKey=0;return;}
+ if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){cursorWatch=false;cursorWatchKey=0;cursorProbePhase=0;return;}
+ if(cursorProbePhase){
+   const uint32_t elapsed=millis()-cursorProbeStart;
+   const unsigned due=cursorProbePhase==1?100:cursorProbePhase==2?500:1000;
+   if(held){cursorProbePhase=0;Serial.println("DOS RAM PROBE readback cancelled by input");}
+   else if(elapsed>=due){
+     cursorWatchLog(cursorProbePhase==1?"after100":cursorProbePhase==2?"after500":"after1000",0);
+     if(++cursorProbePhase>3)cursorProbePhase=0;
+   }
+ }
  const uint8_t k=held;
  const bool arrow=k==77||k==75||k==80||k==72;
  if(cursorWatchKey&&(!arrow||k!=cursorWatchKey)){cursorWatchLog("release",cursorWatchKey);cursorWatchKey=0;}
@@ -543,7 +577,7 @@ static const char *cursorArrowName(uint8_t k){return k==77?"right":k==75?"left":
 static bool cursorIsArrow(uint8_t k){return k==77||k==75||k==80||k==72;}
 static void cursorRamFree(){
  free(cursorRamPrev);free(cursorRamNow);free(cursorMasks);
- cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;cursorWatch=false;cursorWatchKey=0;cursorFilterBusy=false;cursorFilterIndex=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
+ cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;cursorWatch=false;cursorWatchKey=0;cursorProbePhase=0;cursorFilterBusy=false;cursorFilterIndex=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
 }
 static bool cursorRamAlloc(){
  cursorRamPrev=(uint8_t*)ps_malloc(CURSOR_RAM_N);
@@ -685,6 +719,16 @@ void dos_cursor_scan(const char *arg){
    cursorWatchLog("baseline",0);return;
  }
  if(cursorWatch&&!strcmp(arg,"list")){cursorWatchLog("manual",0);return;}
+ if(!strncmp(arg,"test ",5)){
+   int x,y;char tail;
+   if(sscanf(arg+5,"%d %d %c",&x,&y,&tail)!=2){Serial.println("DOS RAM PROBE use :cursor test X Y");return;}
+   cursorProbe(x,y,false);return;
+ }
+ if(!strncmp(arg,"testx ",6)){
+   int x;char tail;
+   if(sscanf(arg+6,"%d %c",&x,&tail)!=1){Serial.println("DOS RAM PROBE use :cursor testx X");return;}
+   cursorProbe(x,0,true);return;
+ }
  if(!strcmp(arg,"base")||!strcmp(arg,"auto")){
    const bool automatic=!strcmp(arg,"auto");
    cursorRamFree();
@@ -921,7 +965,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R4 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R5 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
