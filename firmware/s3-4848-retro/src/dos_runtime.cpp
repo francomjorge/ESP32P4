@@ -565,7 +565,7 @@ static void cursorYList(){
  if(!cursorYActive){Serial.println("DOS YFIND inactive");return;}
  if(cursorYBusy){Serial.printf("DOS YFIND busy %u/%u\n",cursorYIndex,CURSOR_RAM_N-1);return;}
  Serial.printf("DOS YFIND count rounds=%u y=%u Y16=%u Y8=%u\n",cursorYRounds,cursorYLast,cursorYCounts[0],cursorYCounts[1]);
- for(unsigned m=0;m<2;++m)for(unsigned n=0;n<min(cursorYCounts[m],24u);++n){
+ for(unsigned m=0;m<2;++m)for(unsigned n=0;n<min<uint32_t>(cursorYCounts[m],24u);++n){
    const uint32_t a=cursorYAddr[m][n];
    Serial.printf("DOS YFIND %s addr=%05lx value=%u deltaX=%ld\n",m?"Y8":"Y16",(unsigned long)a,m?unsigned(vm->memory.readByte(a)):cursorWatchWord(a),long(a)-long(cursorLogicalX));
  }
@@ -587,7 +587,7 @@ static void cursorYSample(){
 }
 static void cursorYSlice(){
  if(!cursorYBusy)return;
- const uint32_t end=min(CURSOR_RAM_N-1,cursorYIndex+8192u);
+ const uint32_t end=min<uint32_t>(CURSOR_RAM_N-1,cursorYIndex+8192u);
  for(unsigned m=0;m<2;++m){
    uint8_t *mask=cursorYMasks+m*CURSOR_MASK_N;
    for(uint32_t i=cursorYIndex;i<end;++i){
