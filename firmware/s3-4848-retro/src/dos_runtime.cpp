@@ -561,6 +561,84 @@ namespace {
 constexpr uint32_t CURSOR_RAM_BASE=0x500, CURSOR_RAM_END=0xa0000;
 constexpr uint32_t CURSOR_RAM_N=CURSOR_RAM_END-CURSOR_RAM_BASE;
 constexpr uint32_t CURSOR_MASK_N=(CURSOR_RAM_N+7)/8;
+// Read-only, explicitly requested snapshots of the user's known four digits.
+// No game-input injection, no writes and no scan outside the diagnostic.
+static uint8_t *keyScanBase=nullptr,*keyScanCurrent=nullptr;
+static char keyScanDigits[5]={};
+static uint16_t keyScanValue=0,keyScanBcd=0;
+static bool keyScanBusy=false,keyScanBefore=false,keyScanReady=false;
+static uint32_t keyScanIndex=0,keyScanLast=0,keyScanCount[3][2]={},keyScanAddr[3][2][8]={};
+static const char *const keyScanNames[]={"ASCII","U16LE","BCD16LE"};
+static void keyScanFree(){
+ free(keyScanBase);free(keyScanCurrent);keyScanBase=keyScanCurrent=nullptr;
+ keyScanBusy=keyScanReady=false;keyScanDigits[0]=0;keyScanLast=0;keyScanIndex=0;
+}
+static bool keyScanMatch(const uint8_t *p,unsigned m){
+ if(m==0)return memcmp(p,keyScanDigits,4)==0;
+ const unsigned n=unsigned(p[0])|(unsigned(p[1])<<8);
+ return n==(m==1?keyScanValue:keyScanBcd);
+}
+static bool keyScanAvailable(){
+ return vm&&activeGame==1&&!launcher&&!bootPhase&&!loadingGame&&!launchPending&&!benchUntil;
+}
+static void keyScanReport(){
+ if(keyScanBusy){Serial.printf("DOS KEYSCAN busy %u/%u\n",keyScanIndex,CURSOR_RAM_N);return;}
+ if(!keyScanReady){Serial.println("DOS KEYSCAN no completed snapshot");return;}
+ Serial.printf("DOS KEYSCAN %s code=%s\n",keyScanBefore?"BEFORE":"AFTER",keyScanDigits);
+ for(unsigned m=0;m<3;++m){
+   for(unsigned k=0;k<2;++k){
+     if(keyScanBefore&&k)continue;
+     char out[180];unsigned n=snprintf(out,sizeof(out),"DOS KEYSCAN %s %s count=%u addr=",keyScanNames[m],k?"new":(keyScanBefore?"before":"retained"),keyScanCount[m][k]);
+     for(unsigned j=0;j<min(keyScanCount[m][k],8u)&&n+8<sizeof(out);++j)n+=snprintf(out+n,sizeof(out)-n,"%s%05lx",j?",":"",(unsigned long)keyScanAddr[m][k][j]);
+     Serial.println(out);
+   }
+ }
+}
+static void keyScanStart(bool before){
+ if(!keyScanAvailable()){Serial.println("DOS KEYSCAN wait for Monkey Island screen");return;}
+ if(keyScanBusy){Serial.println("DOS KEYSCAN busy; wait for result");return;}
+ if(!keyScanBase||!keyScanCurrent){Serial.println("DOS KEYSCAN use :clave ref 1234 first");return;}
+ uint32_t t=micros();
+ memcpy(before?keyScanBase:keyScanCurrent,vm->memory.RAM+CURSOR_RAM_BASE,CURSOR_RAM_N);
+ keyScanBefore=before;keyScanReady=false;keyScanBusy=true;keyScanIndex=0;keyScanLast=millis();
+ memset(keyScanCount,0,sizeof(keyScanCount));
+ Serial.printf("DOS KEYSCAN captured %s code=%s snapshot_us=%u\n",before?"before":"after",keyScanDigits,micros()-t);
+}
+static void keyScanTick(){
+ if(!keyScanBase)return;
+ if(!keyScanAvailable()||millis()-keyScanLast>300000u){keyScanFree();Serial.println("DOS KEYSCAN released");return;}
+ if(!keyScanBusy)return;
+ const uint8_t *p=keyScanBefore?keyScanBase:keyScanCurrent;
+ const uint32_t end=min(CURSOR_RAM_N-3,keyScanIndex+4096u);
+ for(uint32_t i=keyScanIndex;i<end;++i){
+   for(unsigned m=0;m<3;++m){
+     if(!keyScanMatch(p+i,m))continue;
+     const unsigned k=(!keyScanBefore&&!keyScanMatch(keyScanBase+i,m))?1:0;
+     unsigned &count=keyScanCount[m][k];
+     if(count<8)keyScanAddr[m][k][count]=CURSOR_RAM_BASE+i;
+     ++count;
+   }
+ }
+ keyScanIndex=end;
+ if(end==CURSOR_RAM_N-3){keyScanBusy=false;keyScanReady=true;keyScanReport();}
+}
+void dos_key_scan(const char *arg){
+ if(!strcmp(arg,"stop")){keyScanFree();Serial.println("DOS KEYSCAN stopped; buffers released");return;}
+ if(!strcmp(arg,"list")){keyScanReport();return;}
+ if(!keyScanAvailable()){Serial.println("DOS KEYSCAN unavailable until Monkey Island is displayed");return;}
+ if(!strncmp(arg,"ref ",4)){
+   const char *p=arg+4;
+   if(strlen(p)!=4||strspn(p,"0123456789")!=4){Serial.println("DOS KEYSCAN use :clave ref DDDD");return;}
+   keyScanFree();
+   keyScanBase=(uint8_t*)ps_malloc(CURSOR_RAM_N);keyScanCurrent=(uint8_t*)ps_malloc(CURSOR_RAM_N);
+   if(!keyScanBase||!keyScanCurrent){keyScanFree();Serial.println("DOS KEYSCAN insufficient PSRAM");return;}
+   memcpy(keyScanDigits,p,5);keyScanValue=keyScanBcd=0;
+   for(unsigned i=0;i<4;++i){keyScanValue=keyScanValue*10+(p[i]-'0');keyScanBcd=(keyScanBcd<<4)|(p[i]-'0');}
+   keyScanStart(true);return;
+ }
+ if(!strcmp(arg,"after")){keyScanStart(false);return;}
+ Serial.println("DOS KEYSCAN :clave ref DDDD / after / list / stop");
+}
 static uint8_t *cursorRamPrev=nullptr,*cursorRamNow=nullptr,*cursorMasks=nullptr;
 static unsigned cursorRounds=0;
 // These are physical guest addresses observed in the 059R3 experiment.
@@ -1071,7 +1149,7 @@ static const OverlayKey gameMenu[4]={{"GRABAR",0},{"CARGAR",0},{"VOLVER",243},{"
 static const OverlayKey exitMenu[2]={{"CANCELAR",251},{"CONFIRMAR SALIR",253}};
 static const OverlayKey monkeyMenu[5]={{"PARTIDA",254},{"NUMERICO",244},{"TEXTO",248},{"VOLVER",243},{"SALIR",252}};
 // F5 is the original game's shared save/load dialog. The disk remains read-only.
-static const OverlayKey monkeyGameMenu[3]={{"GUARDAR",63},{"CARGAR",63},{"VOLVER",251}};
+static const OverlayKey monkeyGameMenu[5]={{"GUARDAR",63},{"CARGAR",63},{"S",31},{"N",49},{"VOLVER",251}};
 
 static bool panelRepaint=false;
 static uint8_t mods=0;
@@ -1088,9 +1166,9 @@ static void quickCell(const PanelKey &k,const char *name,int top){
  const int x=k.x,y=top+k.y,w=k.w,h=k.h;
  dosLcd->fillRoundRect(x+2,y+2,w-4,h-4,4,0x2124);
  dosLcd->drawRoundRect(x+2,y+2,w-4,h-4,4,0x7bef);
- dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
- dosLcd->setCursor(x+(w-int(strlen(k.key.label))*18)/2,y+5);dosLcd->print(k.key.label);
- dosLcd->setTextSize(1);dosLcd->setCursor(x+(w-int(strlen(name))*6)/2,y+35);dosLcd->print(name);
+ dosLcd->setTextColor(0xffff);dosLcd->setTextSize(2);
+ dosLcd->setCursor(x+(w-int(strlen(k.key.label))*12)/2,y+9);dosLcd->print(k.key.label);
+ dosLcd->setTextSize(1);dosLcd->setCursor(x+(w-int(strlen(name))*6)/2,y+31);dosLcd->print(name);
 }
 static void numericCell(const PanelKey &k,int top){
  if(k.key.scan<2||k.key.scan>11){cell(k.key,k.x,top+k.y,k.w,k.h);return;}
@@ -1111,7 +1189,7 @@ static void drawPanel(){
  }
  else if(activeGame==1&&m==0){unsigned i=0;for(const auto &k:monkeyQuick){quickCell(k,monkeyQuickNames[i++],top);}}
  else if(activeGame==1&&m==5){for(int c=0;c<5;c++)cell(monkeyMenu[c],c*96,top,96,48);}
- else if(activeGame==1&&m==7){for(int c=0;c<3;c++)cell(monkeyGameMenu[c],c*160,top,160,48);}
+ else if(activeGame==1&&m==7){for(int c=0;c<5;c++)cell(monkeyGameMenu[c],c*96,top,96,48);}
  else if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,top,120,48);}
  else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,top,240,48);}
  else for(int c=0;c<5;c++){OverlayKey k=toolbar[c];if(c==0&&activeGame==0)k.scan=250;cell(k,c*96,top,96,48);}
@@ -1154,7 +1232,7 @@ static uint8_t hitPanel(int x,int y){
  }
  else if(activeGame==1&&m==0){for(const auto &k:monkeyQuick)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
  else if(activeGame==1&&m==5)return monkeyMenu[x/96].scan;
- else if(activeGame==1&&m==7)return monkeyGameMenu[x/160].scan;
+ else if(activeGame==1&&m==7)return monkeyGameMenu[x/96].scan;
  else if(m==0){if(x<96&&activeGame==0)return 250;return toolbar[x/96].scan;}
  else if(m==5)return gameMenu[x/120].scan;
  else if(m==6)return exitMenu[x/240].scan;
@@ -1193,7 +1271,7 @@ void dos_touch_game(unsigned n,int x,int y){
      if(k==240||k==241||k==242){mods^=1u<<(k-240);panelRepaint=true;}
      else if(k==250)setPanel(4);else if(k==243)setPanel(0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
      else if(k==251)setPanel(5);else if(k==252)setPanel(6);else if(k==254&&monkey)setPanel(7);
-     else if(k==63&&monkey&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==7){overlayTap(k);setPanel(0);diag_logf(false,"DOS SAVE/LOAD native F5; disk read-only\n");}
+     else if(k==63&&monkey&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==7){overlayTap(k);diag_logf(false,"DOS SAVE/LOAD native F5; disk read-only\n");}
      else if(k==253&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==6){diag_logf(false,"DOS EXIT cause=confirmed_menu\n");dos_request_exit();}
      else if(k==246){dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
@@ -1274,7 +1352,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059S DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059S2 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1320,6 +1398,7 @@ void dos_tick(){
   static uint32_t maxSlice=0,maxCapture=0,captureTotalUs=0,captureN=0;
   if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
     if(cursorWatch||cursorAuto)cursorAutoTick();
+    if(keyScanBase)keyScanTick();
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
     if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
     else if(vm->video.prismaDrawDue&&pendingPanel==255&&!panelRepaint){

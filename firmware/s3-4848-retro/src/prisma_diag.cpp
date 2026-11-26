@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <string.h>
 void dos_cursor_scan(const char *arg);
+void dos_key_scan(const char *arg);
 
 // Single producer (Arduino loop/setup); never called from LCD worker.
 namespace {
@@ -39,7 +40,7 @@ static void exportLog(bool perf){
 static void runCommand(){
  if(overflow){Serial.println("PRISMA ERR command too long");return;}
  line[used]=0;
- if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop ; :: sends literal colon");
+ if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop :clave ref DDDD/after/list/stop ; :: sends literal colon");
  else if(!strcmp(line,"status"))prisma_diag_status();
  else if(!strcmp(line,"perf"))exportLog(true);
  else if(!strcmp(line,"log"))exportLog(false);
@@ -50,6 +51,7 @@ static void runCommand(){
  else if(!strcmp(line,"debug off")){live=false;Serial.println("PRISMA DEBUG OFF (history retained)");}
  else if(!strcmp(line,"bench")){if(!prisma_diag_bench())Serial.println("PRISMA BENCH unavailable: enter a DOS game or console first");}
  else if(!strncmp(line,"cursor ",7))dos_cursor_scan(line+7);
+ else if(!strncmp(line,"clave ",6))dos_key_scan(line+6);
  else Serial.println("PRISMA ERR unknown command; :help");
 }
 }
@@ -58,7 +60,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 059S reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 059S2 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);
