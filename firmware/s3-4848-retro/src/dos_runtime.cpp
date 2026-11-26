@@ -44,7 +44,7 @@ static bool mouseMode=true,consoleMode=false;
 static int activeGame=-1;
 static uint8_t pendingPanel=255;
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
-static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:432;}
+static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:(activeGame==1&&p==0)?384:432;}
 static uint32_t overlayKeys=0;
 static void drawPanel();
 static void setPanel(uint8_t mode);
@@ -488,6 +488,8 @@ bool dos_launcher_touch(unsigned n,int x,int y){
    const char *cmd=gameCmds[choice];diag_logf(false, "DOS LAUNCH %s\n",cmd);
    if(!injectCommand(cmd)){Serial.println("DOS command rejected: not at empty prompt");return true;}
    activeGame=choice;clearText();vm->cpu.prismaMouseEnabled=true;vm->cpu.prismaMousePending=false;
+   monkeyRamTouch=choice==1;monkeyRamBlocked=false;monkeyRamWrites=monkeyRamRejects=monkeyRamRecoveries=0;
+   if(monkeyRamTouch)Serial.println("DOS RAM TOUCH armed at launch; waits for coherent cursor");
    showLoading(choice);loadingGame=true;loadingIndex=choice;loadProgress(35,"Comando enviado");
    mouseMode=true;__atomic_store_n(&panelMode,(uint8_t)0,__ATOMIC_RELAXED);host.timer.resume();vm->video.updatedscreen=true;launcher=false;launchPending=true;promptGone=false;launchTime=millis();host.video.invalidate();
   }
@@ -587,7 +589,8 @@ static void monkeyRamReport(const char *event){
 }
 static void monkeyRamTick(){
  if(!monkeyRamTouch||monkeyClickDown)return;
- if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||launchPending){monkeyRamTouch=false;monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
+ if(!vm||activeGame!=1||launcher){monkeyRamTouch=false;monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
+ if(bootPhase||loadingGame||launchPending){monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
  if(held||benchUntil||pendingPanel!=255){monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
  if(monkeyRamFlight){
    const bool matched=monkeyRamCoherent()&&cursorWatchWord(cursorLogicalX)==monkeyRamX&&cursorWatchWord(cursorLogicalY)==monkeyRamY;
@@ -609,6 +612,11 @@ static void monkeyRamTick(){
      monkeyRamReport("readback_timeout");
      return;
    }else return;
+ }
+ // No RAM checks in an idle frame. A blocked state is checked at 10Hz.
+ if(!directQueued){
+   if(!monkeyRamBlocked||millis()-monkeyRamBlockedAt<100)return;
+   monkeyRamBlockedAt=millis();
  }
  if(!monkeyRamCoherent()){
    if(directQueued){
@@ -932,18 +940,18 @@ static void cursorAutoTick(){
 }
 }
 void dos_cursor_scan(const char *arg){
- if(!strcmp(arg,"stop")){cursorRamFree();monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM scan released; RAM touch off");return;}
+ if(!strcmp(arg,"stop")){cursorRamFree();cancelDirect();Serial.println("DOS RAM scan released; default RAM touch retained");return;}
  if(!strcmp(arg,"click")||!strcmp(arg,"click mouse")){
    if(!monkeyClickRequest(!strcmp(arg,"click mouse"),"serial"))Serial.println("DOS ACTION rejected: enable RAM touch in Monkey Island and wait for idle");
    return;
  }
- if(!strcmp(arg,"touch off")){monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM TOUCH off");return;}
+ if(!strcmp(arg,"touch off")){Serial.println("DOS RAM TOUCH always enabled in Monkey Island");return;}
  if(!strcmp(arg,"touch status")){monkeyRamReport("status");return;}
  if(!strcmp(arg,"touch on")){
-   if(!monkeyRamCoherent()||held||pendingPanel!=255||vm->cpu.prismaMouseInCall){Serial.println("DOS RAM TOUCH rejected: wait for stationary Monkey Island cursor and matching X/Y");return;}
+   if(!vm||activeGame!=1||launcher){Serial.println("DOS RAM TOUCH only available in Monkey Island");return;}
+   if(monkeyRamTouch){monkeyRamReport("already_armed");return;}
    cursorRamFree();cancelDirect();dos_mouse(0,0,false);
-   monkeyRamWrites=monkeyRamRejects=monkeyRamRecoveries=0;monkeyRamBlocked=false;monkeyRamTouch=true;
-   Serial.printf("DOS RAM TOUCH on XY=%u,%u\n",cursorWatchWord(cursorLogicalX),cursorWatchWord(cursorLogicalY));return;
+   monkeyRamTouch=true;monkeyRamReport("armed");return;
  }
  if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){
    Serial.println("DOS RAM unavailable: enter Monkey Island and wait for game");return;
@@ -1034,6 +1042,22 @@ static const PanelKey keyboard[]={
  PK("Z",44,0,120,40,40),PK("X",45,40,120,40,40),PK("C",46,80,120,40,40),PK("V",47,120,120,40,40),PK("B",48,160,120,40,40),PK("N",49,200,120,40,40),PK("M",50,240,120,40,40),PK("BORRAR",14,280,120,120,40),PK(",",51,400,120,40,40),PK(".",52,440,120,40,40),
  PK("ESPACIO",57,0,160,120,40),PK("ESC",1,120,160,80,40),PK("CTRL",241,200,160,60,40),PK("ALT",242,260,160,60,40),PK("-",12,320,160,40,40),PK("TAB",15,360,160,60,40),PK("PAD",244,420,160,60,40)
 };
+// Monkey Island: two rows, all 12 original verb shortcuts, ESC, MENU.
+static const PanelKey monkeyQuick[]={
+ PK("A",24,0,0,68,48),PK("C",46,68,0,69,48),PK("I",17,137,0,68,48),
+ PK("R",25,205,0,69,48),PK("M",38,274,0,68,48),PK("H",20,342,0,69,48),PK("ESC",1,411,0,69,48),
+ PK("U",22,0,48,68,48),PK("D",34,68,48,69,48),PK("E",31,137,48,68,48),
+ PK("T",21,205,48,69,48),PK("EN",49,274,48,68,48),PK("AP",33,342,48,69,48),PK("MENU",251,411,48,69,48)
+};
+static const char *const monkeyQuickNames[]={"ABRIR","CERRAR","IR A","RECOGER","MIRAR","HABLAR","","USAR","DAR","EMPUJAR","TIRAR","ENCENDER","APAGAR",""};
+static_assert(sizeof(monkeyQuickNames)/sizeof(monkeyQuickNames[0])==sizeof(monkeyQuick)/sizeof(monkeyQuick[0]),"quick label count");
+static const PanelKey monkeyNumeric[]={
+ PK("1",2,0,0,60,60),PK("2",3,60,0,60,60),PK("3",4,120,0,60,60),PK("4",5,180,0,60,60),PK("5",6,240,0,60,60),
+ PK("6",7,0,60,60,60),PK("7",8,60,60,60,60),PK("8",9,120,60,60,60),PK("9",10,180,60,60,60),PK("0",11,240,60,60,60),
+ PK("^",72,334,0,34,38),PK("<",75,300,38,34,44),PK(">",77,368,38,34,44),PK("v",80,334,82,34,38),
+ PK("ENTER",28,402,0,78,40),PK("ESPACIO",57,402,40,78,40),PK("OCULTAR",243,402,80,78,40),
+ PK("ESC",1,300,0,34,38),PK("TAB",15,368,82,34,38)
+};
 static const PanelKey pad[]={
  PK("7",8,8,3,36,36),PK("8",9,44,3,36,36),PK("9",10,80,3,36,36),
  PK("4",5,8,39,36,36),PK("5",6,44,39,36,36),PK("6",7,80,39,36,36),
@@ -1045,6 +1069,9 @@ static const PanelKey pad[]={
 static const OverlayKey toolbar[5]={{"TEXTO",248},{"PAD",244},{"ESC",1},{"ENTER",28},{"MENU",251}};
 static const OverlayKey gameMenu[4]={{"GRABAR",0},{"CARGAR",0},{"VOLVER",243},{"SALIR",252}};
 static const OverlayKey exitMenu[2]={{"CANCELAR",251},{"CONFIRMAR SALIR",253}};
+static const OverlayKey monkeyMenu[5]={{"PARTIDA",254},{"NUMERICO",244},{"TEXTO",248},{"VOLVER",243},{"SALIR",252}};
+// F5 is the original game's shared save/load dialog. The disk remains read-only.
+static const OverlayKey monkeyGameMenu[3]={{"GUARDAR",63},{"CARGAR",63},{"VOLVER",251}};
 
 static bool panelRepaint=false;
 static uint8_t mods=0;
@@ -1056,19 +1083,42 @@ static void cell(const OverlayKey &k,int x,int y,int w,int h){
  dosLcd->setTextSize(size);dosLcd->setTextColor(k.scan?0xffff:0x7bef);
  dosLcd->setCursor(x+(w-int(strlen(k.label))*6*size)/2,y+(h-8*size)/2);dosLcd->print(k.label);
 }
+static void quickCell(const PanelKey &k,const char *name,int top){
+ if(!*name){cell(k.key,k.x,top+k.y,k.w,k.h);return;}
+ const int x=k.x,y=top+k.y,w=k.w,h=k.h;
+ dosLcd->fillRoundRect(x+2,y+2,w-4,h-4,4,0x2124);
+ dosLcd->drawRoundRect(x+2,y+2,w-4,h-4,4,0x7bef);
+ dosLcd->setTextColor(0xffff);dosLcd->setTextSize(3);
+ dosLcd->setCursor(x+(w-int(strlen(k.key.label))*18)/2,y+5);dosLcd->print(k.key.label);
+ dosLcd->setTextSize(1);dosLcd->setCursor(x+(w-int(strlen(name))*6)/2,y+35);dosLcd->print(name);
+}
+static void numericCell(const PanelKey &k,int top){
+ if(k.key.scan<2||k.key.scan>11){cell(k.key,k.x,top+k.y,k.w,k.h);return;}
+ const int x=k.x,y=top+k.y,w=k.w,h=k.h;
+ dosLcd->fillRoundRect(x+2,y+2,w-4,h-4,4,0x2124);dosLcd->drawRoundRect(x+2,y+2,w-4,h-4,4,0x7bef);
+ dosLcd->setTextColor(0xffff);dosLcd->setTextSize(4);
+ dosLcd->setCursor(x+(w-24)/2,y+(h-32)/2);dosLcd->print(k.key.label);
+}
 static void drawPanel(){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(m==3)return;
  dosLcd->fillRect(0,top,480,480-top,0x0842);
  if(m==1||m==4){unsigned n=0;for(const auto &k:keyboard){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%10==0)vTaskDelay(1);}}
- else if(m==2){unsigned n=0;for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
+ else if(m==2){
+   unsigned n=0;
+   if(activeGame==1){for(const auto &k:monkeyNumeric){numericCell(k,top);if(++n%6==0)vTaskDelay(1);}}
+   else{for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
+ }
+ else if(activeGame==1&&m==0){unsigned i=0;for(const auto &k:monkeyQuick){quickCell(k,monkeyQuickNames[i++],top);}}
+ else if(activeGame==1&&m==5){for(int c=0;c<5;c++)cell(monkeyMenu[c],c*96,top,96,48);}
+ else if(activeGame==1&&m==7){for(int c=0;c<3;c++)cell(monkeyGameMenu[c],c*160,top,160,48);}
  else if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,top,120,48);}
  else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,top,240,48);}
  else for(int c=0;c<5;c++){OverlayKey k=toolbar[c];if(c==0&&activeGame==0)k.scan=250;cell(k,c*96,top,96,48);}
 }
 // Requests never block the producer behind an in-flight VGA frame.
 static void setPanel(uint8_t mode){
- if(mode>6||!vm)return;
+ if(mode>7||!vm||(mode==7&&activeGame!=1))return;
  pendingPanel=mode;
 }
 static void servicePanel(){
@@ -1098,7 +1148,13 @@ static uint8_t hitPanel(int x,int y){
  if(x<0||x>=480||y<top||y>=480)return 0;
  y-=top;
  if(m==1||m==4){for(const auto &k:keyboard)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
- else if(m==2){for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+ else if(m==2){
+   if(activeGame==1){for(const auto &k:monkeyNumeric)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+   else{for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+ }
+ else if(activeGame==1&&m==0){for(const auto &k:monkeyQuick)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+ else if(activeGame==1&&m==5)return monkeyMenu[x/96].scan;
+ else if(activeGame==1&&m==7)return monkeyGameMenu[x/160].scan;
  else if(m==0){if(x<96&&activeGame==0)return 250;return toolbar[x/96].scan;}
  else if(m==5)return gameMenu[x/120].scan;
  else if(m==6)return exitMenu[x/240].scan;
@@ -1136,7 +1192,8 @@ void dos_touch_game(unsigned n,int x,int y){
      const uint8_t k=pending;
      if(k==240||k==241||k==242){mods^=1u<<(k-240);panelRepaint=true;}
      else if(k==250)setPanel(4);else if(k==243)setPanel(0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
-     else if(k==251)setPanel(5);else if(k==252)setPanel(6);
+     else if(k==251)setPanel(5);else if(k==252)setPanel(6);else if(k==254&&monkey)setPanel(7);
+     else if(k==63&&monkey&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==7){overlayTap(k);setPanel(0);diag_logf(false,"DOS SAVE/LOAD native F5; disk read-only\n");}
      else if(k==253&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==6){diag_logf(false,"DOS EXIT cause=confirmed_menu\n");dos_request_exit();}
      else if(k==246){dos_mouse(0,0,true);releaseAt=millis()+120;++touchClicks;}
      else if(k==247){if(!rightDown){vm->mouse.handleButtonDown(Faux86::SerialMouse::ButtonType::Right);rightDown=true;}rightRelease=millis()+120;++touchClicks;}
@@ -1169,7 +1226,7 @@ void dos_touch_game(unsigned n,int x,int y){
  }
  if(panelTouch){
    const uint8_t currentMode=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);
-   if((currentMode==0||currentMode==5||currentMode==6)&&(hitPanel(x,y)!=pending)){if(repeatStarted)dos_key(0);pending=0;return;}
+   if((currentMode==0||currentMode==5||currentMode==6||currentMode==7)&&(hitPanel(x,y)!=pending)){if(repeatStarted)dos_key(0);pending=0;return;}
    // Carmen only: keep the verified short tap path. After a deliberate
    // hold, send physical make/break and bounded typematic make codes.
    if(activeGame==0&&(pending==28||pending==57)&&
@@ -1217,7 +1274,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R8B DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059S DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1262,7 +1319,7 @@ void dos_tick(){
   servicePanel();
   static uint32_t maxSlice=0,maxCapture=0,captureTotalUs=0,captureN=0;
   if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
-    cursorAutoTick();
+    if(cursorWatch||cursorAuto)cursorAutoTick();
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
     if(benchUntil||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED)){vm->video.prismaDrawDue=false;}
     else if(vm->video.prismaDrawDue&&pendingPanel==255&&!panelRepaint){
