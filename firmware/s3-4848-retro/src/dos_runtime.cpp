@@ -1584,7 +1584,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 065 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 066 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1718,7 +1718,7 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"065 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"066 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
@@ -1728,11 +1728,11 @@ void dos_tick(){
     diag_logf(true,"DOS GFX FUSED jobs=%u native_rows=%u px=%u/%u\n",fused,nativeRows,pixels,spanPixels);
     diag_logf(true,"DOS GFX REUSE rows=%u processed=%u\n",reused,sr);
     diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
-    diag_photo_line(6,"065 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(6,"066 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"065 MEM t=%us",millis()/1000);
+    diag_photo_line(10,"066 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));

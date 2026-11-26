@@ -1,7 +1,7 @@
-name: S3 Retro - build 065 combined
+name: S3 Retro - build 066 combined
 on:
   push:
-    branches: [build-065-vga-sram]
+    branches: [build-066-cpu-shifts]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -622,7 +622,7 @@ jobs:
               assert src[start:].count(old)==1
               src=src[:start]+src[start:].replace(old,"prismaScaleDirtyValid=true;\n              "+old+"\n              prismaScaleDirtyValid=false;",1)
           p.write_text(src)
-          # 065: direct native VGA 256-color snapshot to the existing LCD cache.
+          # 066: direct native VGA 256-color snapshot to the existing LCD cache.
           p=path("Video.cpp","prismaRenderSnapshot()")
           src=p.read_text()
           src="extern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);\n"+src if src.startswith("#include <stdint.h>")==False else src.replace("#include <stdint.h>","#include <stdint.h>\nextern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);",1)
@@ -860,6 +860,109 @@ jobs:
 
           """+old,1)
           p.write_text('#include <esp_attr.h>\n'+src)
+          # 066: constant-time SHL/SHR/SAR. Preserve the original emulator
+          # flags even for count zero and counts beyond operand width.
+          p=path("CPU.cpp","prismaDeadline")
+          src=p.read_text()
+          import re
+          a=src.index("FUNC_INLINE uint8_t CPU::op_grp2_8(")
+          b=src.index("FUNC_INLINE",src.index("FUNC_INLINE uint16_t CPU::op_grp2_16(")+12)
+          before=src[a:b]
+          after=before
+          for width in (8,16):
+              mask=(1<<width)-1
+              high=1<<(width-1)
+              tag="0x%X"%high
+              masktag="0x%X"%mask
+              old=f"""    for (shift = 1; shift <= cnt; shift++)
+              {{
+                if (s & {tag})
+                {{
+                  cf = 1;
+                }}
+                else
+                {{
+                  cf = 0;
+                }}
+
+                s = (s << 1) & {masktag};
+              }}"""
+              # Strip YAML indentation from the multiline source fragment.
+              old=old.replace("\n          ","\n")
+              new=f"""    if (cnt) {{
+                cf = cnt <= {width} ? ((s >> ({width}-cnt)) & 1u) : 0u;
+                s = cnt < {width} ? ((s << cnt) & {masktag}u) : 0u;
+              }}""".replace("\n          ","\n")
+              assert after.count(old)==1,("066 SHL",width,after.count(old))
+              after=after.replace(old,new,1)
+              old=f"""    for (shift = 1; shift <= cnt; shift++)
+              {{
+                msb = s & {tag};
+                cf = s & 1;
+                s = (s >> 1) | msb;
+              }}""".replace("\n          ","\n")
+              new=f"""    if (cnt) {{
+                const bool negative=(s & {tag}u)!=0;
+                const unsigned n=cnt < {width} ? cnt : {width};
+                cf=(s >> (n-1)) & 1u;
+                s=(s >> n) | (negative ? ({masktag}u ^ ({masktag}u >> n)) : 0u);
+              }}""".replace("\n          ","\n")
+              assert after.count(old)==1,("066 SAR",width)
+              after=after.replace(old,new,1)
+          old="""    for (shift = 1; shift <= cnt; shift++)
+              {
+                cf = s & 1;
+                s = s >> 1;
+              }""".replace("\n          ","\n")
+          assert after.count(old)==2
+          for width in (8,16):
+              new=f"""    if (cnt) {{
+                cf=cnt <= {width} ? ((s >> (cnt-1)) & 1u) : 0u;
+                s=cnt < {width} ? (s >> cnt) : 0u;
+              }}""".replace("\n          ","\n")
+              after=after.replace(old,new,1)
+          # The actual old/new functions are executed with identical input,
+          # carry, overflow and CPU type, not a reimplementation of the old loop.
+          def model(name,body):
+              body=body.replace("FUNC_INLINE ","").replace("CPU::","")
+              return "struct "+name+"""{
+                uint8_t oper1b=0,reg=0,cputype=0,cf=0,of=0;
+                uint16_t oper1=0;
+                unsigned szp=0;
+                void flag_szp8(uint8_t v){szp=0x10000u|v;}
+                void flag_szp16(uint16_t v){szp=0x20000u|v;}
+              """+body+"\n};\n"
+          test="#include <cstdint>\n#include <cstdlib>\n#include <cstdio>\n#include <random>\n#define CPU_TYPE_8086 0\n"
+          test+=model("Old",before)+model("New",after)
+          test+=r'''
+          static unsigned long long checks=0;
+          static void check(unsigned width,unsigned v,unsigned cnt,unsigned op,unsigned cf,unsigned of,unsigned type){
+            Old a; New b;
+            a.oper1=b.oper1=v; a.oper1b=b.oper1b=v;
+            a.reg=b.reg=op;a.cf=b.cf=cf;a.of=b.of=of;a.cputype=b.cputype=type;
+            unsigned x=width==8?a.op_grp2_8(cnt):a.op_grp2_16(cnt);
+            unsigned y=width==8?b.op_grp2_8(cnt):b.op_grp2_16(cnt);
+            if(x!=y||a.cf!=b.cf||a.of!=b.of||a.szp!=b.szp)std::abort();
+            ++checks;
+          }
+          int main(){
+            for(unsigned v=0;v<256;++v)for(unsigned n=0;n<256;++n)
+              for(unsigned op=4;op<8;++op)for(unsigned f=0;f<4;++f)for(unsigned t=0;t<2;++t)
+                check(8,v,n,op,f&1,f>>1,t);
+            for(unsigned v=0;v<65536;++v)for(unsigned n=0;n<=17;++n)
+              for(unsigned op=4;op<8;++op)
+                check(16,v,n,op,v&1,(v>>1)&1,0);
+            std::mt19937 rng(66);
+            for(unsigned i=0;i<500000;++i)check(16,rng()&65535,rng()&255,4+(rng()&3),rng()&1,rng()&1,rng()&1);
+            std::printf("PRISMA 066 shifts equivalent: %llu checks\n",checks);
+          }
+          '''
+          from pathlib import Path
+          import subprocess
+          Path("/tmp/prisma066-shifts.cpp").write_text(test)
+          subprocess.run(["g++","-O2","-std=c++17","/tmp/prisma066-shifts.cpp","-o","/tmp/prisma066-shifts"],check=True)
+          subprocess.run(["/tmp/prisma066-shifts"],check=True)
+          p.write_text(src[:a]+after+src[b:])
           # Pace physical keyboard scancodes after actual guest port reads.
           p=path("InputManager.h","prismaReadCount")
           edit(p,[("    uint32_t prismaReadCount = 0;","    uint32_t prismaReadCount = 0;\n    uint32_t prismaSentCount = 0;\n    uint32_t prismaNextKeyUs = 0;")])
@@ -1033,7 +1136,7 @@ jobs:
               used.update(pixels)
           assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","OCULTAR","^","<","v",">"}
           assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
-          print("065 PAD geometry verified, no overlapping touch zones")
+          print("066 PAD geometry verified, no overlapping touch zones")
           PY
       - name: Test touch double-tap predicate
         run: |
@@ -1074,7 +1177,7 @@ jobs:
                       native=[palette[planes[x%4][(start+sy*80+x//4)&65535]] for x in range(320)]
                       expanded=[p for p in native for _ in range(2)]
                       assert [expanded[x*640//dw] for x in range(dw)]==[native[(x*640//dw)//2] for x in range(dw)]
-          print("065 fused VGA coordinate and palette equivalence passed")
+          print("066 fused VGA coordinate and palette equivalence passed")
           PY
       - name: Test RAM cursor filter
         run: |
@@ -1103,13 +1206,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-065-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-065-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-065.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-066-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-066-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-066.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-065-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-066-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1118,6 +1221,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-065
+          name: PRISMA-RETRO-S3-066
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error

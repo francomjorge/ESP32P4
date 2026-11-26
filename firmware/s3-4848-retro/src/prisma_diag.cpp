@@ -31,7 +31,7 @@ static bool matches(LogMode m,const char *s){
 }
 static void exportPhoto(unsigned first,unsigned end){
  live=LOG_OFF;
- if(!photo[first][0]){Serial.println("065 PHOTO no DOS sample yet; wait 3s and retry");return;}
+ if(!photo[first][0]){Serial.println("066 PHOTO no DOS sample yet; wait 3s and retry");return;}
  for(unsigned i=first;i<end;++i)Serial.println(photo[i]);
  Serial.println("PHOTO END (logs off)");
 }
@@ -57,6 +57,9 @@ static void exportLog(bool perf){
 }
 static void runCommand(){
  if(overflow){Serial.println("PRISMA ERR command too long");return;}
+ while(used&&(line[used-1]==' '||line[used-1]=='\t'))--used;
+ unsigned first=0;while(first<used&&(line[first]==' '||line[first]=='\t'))++first;
+ if(first){memmove(line,line+first,used-first);used-=first;}
  line[used]=0;
  if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :gfx :input :memory :logs all/gfx/input/mem/off :perf :mem :tasks :log :crash :debug on :debug off :bench :mark LABEL :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop :clave ref DDDD/after/list/stop ; :: sends literal colon");
  else if(!strcmp(line,"status"))prisma_diag_status();
@@ -78,7 +81,7 @@ static void runCommand(){
  else if(!strcmp(line,"bench")){if(!prisma_diag_bench())Serial.println("PRISMA BENCH unavailable: enter a DOS game or console first");}
  else if(!strncmp(line,"cursor ",7))dos_cursor_scan(line+7);
  else if(!strncmp(line,"clave ",6))dos_key_scan(line+6);
- else Serial.println("PRISMA ERR unknown command; :help");
+ else Serial.printf("PRISMA ERR unknown command [%s]; :help\n",line);
 }
 }
 void diag_begin(){
@@ -86,7 +89,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 065 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 066 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);
