@@ -1192,6 +1192,35 @@ jobs:
           out.append("}")
           Path("src/dos_art.h").write_text("\n".join(out)+"\n")
           PY
+      - name: Verify REP MOVSW VGA batch guard and ordered word writes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import random
+          # Check generated interpreter code, then differential-test the
+          # bounded address/count rule and ordered byte-write model.
+          files=[p for p in Path(".pio").rglob("CPU.cpp") if "prismaProfileVramWords+=n" in p.read_text(errors="ignore")]
+          assert files, "073 MOVSW patch not found"
+          code=files[0].read_text()
+          assert "vm.memory.writeWord(dst+k,prismaRead16(vm,srcaddr+k))" in code
+          assert "(dst>=0xa0000 && dst+bytes<=0xc0000)" in code
+          rng=random.Random(73)
+          for _ in range(12000):
+              n=min(rng.randrange(1,100),32,rng.randrange(0,90)//2,rng.randrange(0,90)//2)
+              b=n*2
+              si=rng.randrange(65536);di=rng.randrange(65536)
+              src=rng.randrange(0x9ff00);dst=rng.randrange(0x9ff80,0xc0080)
+              allowed=n>=2 and si+b<=65536 and di+b<=65536 and src+b<=0xa0000 and dst>=0xa0000 and dst+b<=0xc0000
+              if not allowed: continue
+              data=rng.randbytes(b)
+              expected=[(dst+k,data[k]) for k in range(b)]
+              actual=[]
+              for k in range(0,b,2):
+                  word=data[k] | data[k+1]<<8
+                  actual.extend(((dst+k,word&255),(dst+k+1,word>>8)))
+              assert actual==expected
+          print("073 bounded MOVSW VGA address/ordered-write model passed")
+          PY
       - run: pio run -e esp32-4848s040-combined
       - name: Test ModRM decode equivalence
         run: |
