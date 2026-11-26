@@ -1013,6 +1013,9 @@ jobs:
             assert(!monkeyDoubleTap(true,451,100,10,10,10,10));
             assert(!monkeyDoubleTap(true,200,100,10,10,20,25));
             assert(monkeyDoubleTap(true,50,UINT32_MAX-100,10,10,10,10));
+            assert(monkeyDoubleTap(true,600,100,10,10,26,26,true));
+            assert(!monkeyDoubleTap(true,601,100,10,10,10,10,true));
+            assert(!monkeyDoubleTap(true,200,100,10,10,26,27,true));
           }
           '''
           with tempfile.TemporaryDirectory() as d:

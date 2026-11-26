@@ -308,8 +308,8 @@ static uint16_t monkeyClickBiosHead=0,monkeyClickBiosTail=0;
 static const char *monkeyClickSource="none";
 static void monkeyClickCancel();
 // Two nearby completed taps produce one guest click. Unsigned subtraction handles millis wrap.
-static bool monkeyDoubleTap(bool armed,uint32_t now,uint32_t prior,int x,int y,int oldX,int oldY){
- return armed && uint32_t(now-prior)<=(monkeyRamTouch?500u:350u) && abs(x-oldX)+abs(y-oldY)<=(monkeyRamTouch?32:24);
+static bool monkeyDoubleTap(bool armed,uint32_t now,uint32_t prior,int x,int y,int oldX,int oldY,bool ramTouch=false){
+ return armed && uint32_t(now-prior)<=(ramTouch?500u:350u) && abs(x-oldX)+abs(y-oldY)<=(ramTouch?32:24);
 }
 static bool queueDirect(int x,int y,bool click){
  uint16_t nx,ny;
@@ -1128,7 +1128,7 @@ void dos_touch_game(unsigned n,int x,int y){
      if(monkey){
        uint16_t nx,ny;const uint32_t now=millis();
        if(host.video.touchPosition(px,py,nx,ny)){
-         if(monkeyDoubleTap(monkeyTapArmed,now,monkeyTapAt,px,py,monkeyTapX,monkeyTapY)){
+         if(monkeyDoubleTap(monkeyTapArmed,now,monkeyTapAt,px,py,monkeyTapX,monkeyTapY,monkeyRamTouch)){
            monkeyTapArmed=false;
            if(queueDirect(px,py,true))++monkeyDouble;
          }else{
