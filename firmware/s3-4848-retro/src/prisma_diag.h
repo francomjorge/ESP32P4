@@ -3,6 +3,7 @@
 #ifdef PRISMA_COMBINED
 void diag_begin();
 void diag_logf(bool periodic,const char *fmt,...);
+void diag_photo_line(unsigned slot,const char *fmt,...);
 void diag_crashf(const char *fmt,...);
 bool diag_consume(uint8_t c);
 bool diag_command_pending();

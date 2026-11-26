@@ -16,7 +16,25 @@ struct Entry {uint32_t seq,ms;char text[L];};
 struct History {uint32_t magic,version,next,count,seq;Entry entries[N];};
 RTC_NOINIT_ATTR static History history;
 static char lastCrash[192]="No retained crash phase";
-static bool live=true,command=false,overflow=false,swallowLF=false;
+enum LogMode : uint8_t { LOG_ALL,LOG_GFX,LOG_INPUT,LOG_MEM,LOG_OFF };
+static LogMode live=LOG_ALL;
+static bool command=false,overflow=false,swallowLF=false;
+static char photo[14][64]={};
+static const char *logNames[]={"all","gfx","input","mem","off"};
+static bool prefix(const char *s,const char *p){return !strncmp(s,p,strlen(p));}
+static bool matches(LogMode m,const char *s){
+ if(m==LOG_ALL)return true;
+ if(m==LOG_OFF)return false;
+ if(m==LOG_GFX)return prefix(s,"DOS GFX")||prefix(s,"DOS PERF")||prefix(s,"DOS SLICE")||prefix(s,"DOS SCALE")||prefix(s,"DOS RASTER")||prefix(s,"DOS VGA")||prefix(s,"VIDEO PERF")||prefix(s,"PERF ");
+ if(m==LOG_INPUT)return prefix(s,"DOS INPUT")||prefix(s,"DOS TEXT INPUT")||prefix(s,"DOS MOUSE")||prefix(s,"DOS RAM TOUCH")||prefix(s,"DOS OVERLAY")||prefix(s,"DOS ACTION");
+ return prefix(s,"DOS STACK")||prefix(s,"PRISMA MEM");
+}
+static void exportPhoto(unsigned first,unsigned end){
+ live=LOG_OFF;
+ if(!photo[first][0]){Serial.println("060A PHOTO no DOS sample yet; wait 3s and retry");return;}
+ for(unsigned i=first;i<end;++i)Serial.println(photo[i]);
+ Serial.println("PHOTO END (logs off)");
+}
 static char line[64];
 static unsigned used=0;
 static void append(const char *s){
@@ -40,16 +58,23 @@ static void exportLog(bool perf){
 static void runCommand(){
  if(overflow){Serial.println("PRISMA ERR command too long");return;}
  line[used]=0;
- if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :mark LABEL :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop :clave ref DDDD/after/list/stop ; :: sends literal colon");
+ if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :gfx :input :memory :logs all/gfx/input/mem/off :perf :mem :tasks :log :crash :debug on :debug off :bench :mark LABEL :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop :clave ref DDDD/after/list/stop ; :: sends literal colon");
  else if(!strcmp(line,"status"))prisma_diag_status();
  else if(!strcmp(line,"perf"))exportLog(true);
+ else if(!strcmp(line,"gfx"))exportPhoto(0,6);
+ else if(!strcmp(line,"input"))exportPhoto(6,10);
+ else if(!strcmp(line,"memory"))exportPhoto(10,14);
+ else if(!strncmp(line,"logs ",5)){
+   for(unsigned i=0;i<5;++i)if(!strcmp(line+5,logNames[i])){live=LogMode(i);Serial.printf("PRISMA LOGS %s\n",logNames[i]);return;}
+   Serial.println("PRISMA logs all/gfx/input/mem/off");
+ }
  else if(!strncmp(line,"mark ",5)&&line[5])diag_logf(false,"DOS GFX MARK %s\n",line+5);
  else if(!strcmp(line,"log"))exportLog(false);
  else if(!strcmp(line,"crash"))Serial.printf("PRISMA CRASH reset=%d %s\n",(int)esp_reset_reason(),lastCrash);
  else if(!strcmp(line,"mem"))Serial.printf("PRISMA MEM heap=%u internal=%u largest=%u psram=%u psram_largest=%u\n",(unsigned)ESP.getFreeHeap(),(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),(unsigned)ESP.getFreePsram(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
  else if(!strcmp(line,"tasks"))Serial.printf("PRISMA TASKS count=%u loop_core=%d loop_stack=%u\n",(unsigned)uxTaskGetNumberOfTasks(),xPortGetCoreID(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
- else if(!strcmp(line,"debug on")){live=true;Serial.println("PRISMA DEBUG ON");}
- else if(!strcmp(line,"debug off")){live=false;Serial.println("PRISMA DEBUG OFF (history retained)");}
+ else if(!strcmp(line,"debug on")){live=LOG_ALL;Serial.println("PRISMA DEBUG ON");}
+ else if(!strcmp(line,"debug off")){live=LOG_OFF;Serial.println("PRISMA DEBUG OFF (history retained)");}
  else if(!strcmp(line,"bench")){if(!prisma_diag_bench())Serial.println("PRISMA BENCH unavailable: enter a DOS game or console first");}
  else if(!strncmp(line,"cursor ",7))dos_cursor_scan(line+7);
  else if(!strncmp(line,"clave ",6))dos_key_scan(line+6);
@@ -61,11 +86,15 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 060 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 060A reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);
- append(buf);if(!periodic||live)Serial.print(buf);
+ append(buf);if(!periodic||matches(live,buf))Serial.print(buf);
+}
+void diag_photo_line(unsigned slot,const char *fmt,...){
+ if(slot>=14)return;
+ va_list ap;va_start(ap,fmt);vsnprintf(photo[slot],sizeof(photo[slot]),fmt,ap);va_end(ap);
 }
 void diag_crashf(const char *fmt,...){
  va_list ap;va_start(ap,fmt);vsnprintf(lastCrash,sizeof(lastCrash),fmt,ap);va_end(ap);
