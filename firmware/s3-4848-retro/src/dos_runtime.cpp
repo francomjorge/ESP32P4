@@ -294,6 +294,11 @@ static uint32_t directMoves=0,directTimeouts=0;
 static bool monkeyTapArmed=false;
 static uint32_t monkeyTapAt=0,monkeySingle=0,monkeyDouble=0,monkeyClicksApplied=0,monkeyPositionMaxUs=0;
 static int monkeyTapX=0,monkeyTapY=0;
+// Experimental per-session opt-in for the validated installed Monkey Island.
+// Never apply this address map to other games.
+static bool monkeyRamTouch=false,monkeyRamFlight=false,monkeyRamClick=false;
+static uint16_t monkeyRamX=0,monkeyRamY=0;
+static uint32_t monkeyRamStarted=0,monkeyRamWrites=0,monkeyRamRejects=0;
 // Two nearby completed taps produce one guest click. Unsigned subtraction handles millis wrap.
 static bool monkeyDoubleTap(bool armed,uint32_t now,uint32_t prior,int x,int y,int oldX,int oldY){
  return armed && uint32_t(now-prior)<=350 && abs(x-oldX)+abs(y-oldY)<=24;
@@ -307,7 +312,7 @@ static bool queueDirect(int x,int y,bool click){
 }
 static void cancelDirect(){
  monkeyTapArmed=false;
- directQueued=directClick=directFlightClick=false;directAt=directRelease=0;
+ directQueued=directClick=directFlightClick=false;directAt=directRelease=0;monkeyRamFlight=monkeyRamClick=false;
  if(vm&&!vm->cpu.prismaMouseInCall)vm->cpu.prismaMousePending=false;
 }
 static void clearText(){textHead=textCount=0;}
@@ -412,6 +417,7 @@ static void drawDosCarousel(){
  char pos[12];snprintf(pos,sizeof(pos),"%d/2",i+1);centered(pos,444,2,0x9cfa);dosLcd->flush(true);
 }
 static void openLauncher(){
+ monkeyRamTouch=false;
  benchUntil=0;bootPhase=false;loadingGame=false;loadingIndex=-1;consoleMode=false;activeGame=-1;clearText();vm->cpu.prismaMouseEnabled=false;vm->cpu.prismaMousePending=false;cancelDirect();__atomic_store_n(&hideGuest,true,__ATOMIC_RELAXED);
  dos_key(0);dos_mouse(0,0,false);
  host.video.drain();launcher=true;host.timer.pause();
@@ -514,10 +520,50 @@ static uint32_t cursorWatchNext=0;
 // Explicit one-shot experiments only. No touch-driven writes and no persistence.
 static uint32_t cursorProbeStart=0;
 static unsigned cursorProbePhase=0;
-static constexpr uint32_t cursorRenderX=0x2e5f0,cursorRenderY=0x2e5f2,cursorLogicalX=0x30df4;
+static constexpr uint32_t cursorRenderX=0x2e5f0,cursorRenderY=0x2e5f2,cursorLogicalX=0x30df4,cursorLogicalY=0x30f2a;
 static constexpr uint32_t cursorWatchAddresses[]={0x2e5f0,0x2e5f2,0x30df4,0x33fb4,0x2e5fb,0x2ed74};
 static unsigned cursorWatchWord(uint32_t a){
  return unsigned(vm->memory.readByte(a))|(unsigned(vm->memory.readByte(a+1))<<8);
+}
+static bool monkeyRamCoherent(){
+ if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||launchPending||benchUntil)return false;
+ const unsigned x=cursorWatchWord(cursorLogicalX),y=cursorWatchWord(cursorLogicalY);
+ return x<=319&&y<=199&&int16_t(cursorWatchWord(cursorRenderX))==int(x)-8&&cursorWatchWord(cursorRenderY)==y+9;
+}
+static void monkeyRamTick(){
+ if(!monkeyRamTouch)return;
+ if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||launchPending){monkeyRamTouch=false;monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
+ if(held||benchUntil||pendingPanel!=255){monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
+ if(monkeyRamFlight){
+   const bool matched=monkeyRamCoherent()&&cursorWatchWord(cursorLogicalX)==monkeyRamX&&cursorWatchWord(cursorLogicalY)==monkeyRamY;
+   if(matched){
+     if(monkeyRamClick){
+       if(vm->input.freeSlots()<8){
+         if(millis()-monkeyRamStarted<300)return;
+         ++monkeyRamRejects;
+       }else{serialTap(28);++touchClicks;++monkeyClicksApplied;}
+     }
+     ++directMoves;monkeyPositionMaxUs=max(monkeyPositionMaxUs,uint32_t(millis()-monkeyRamStarted)*1000u);
+     monkeyRamFlight=monkeyRamClick=false;
+   }else if(millis()-monkeyRamStarted>=300){
+     ++monkeyRamRejects;++directTimeouts;monkeyRamFlight=monkeyRamClick=false;
+     Serial.println("DOS RAM TOUCH readback mismatch; positioning disabled; re-enable after checking coordinates");
+     monkeyRamTouch=false;directQueued=directClick=false;
+     return;
+   }else return;
+ }
+ if(!directQueued)return;
+ if(!monkeyRamCoherent()){
+   if(++monkeyRamRejects<=3)Serial.println("DOS RAM TOUCH skipped: cursor state not coherent");
+   directQueued=directClick=false;return;
+ }
+ const uint16_t x=(uint32_t(directX)*319+32767)/65535;
+ const uint16_t y=(uint32_t(directY)*199+32767)/65535;
+ monkeyRamX=x;monkeyRamY=y;monkeyRamClick=directClick;directQueued=directClick=false;
+ if(cursorWatchWord(cursorLogicalX)!=x||cursorWatchWord(cursorLogicalY)!=y){
+   vm->memory.writeWord(cursorLogicalX,x);vm->memory.writeWord(cursorLogicalY,y);++monkeyRamWrites;
+ }
+ monkeyRamStarted=millis();monkeyRamFlight=true;
 }
 static void cursorWatchLog(const char *event,uint8_t key){
  unsigned v[6];
@@ -821,7 +867,15 @@ static void cursorAutoTick(){
 }
 }
 void dos_cursor_scan(const char *arg){
- if(!strcmp(arg,"stop")){cursorRamFree();Serial.println("DOS RAM scan released");return;}
+ if(!strcmp(arg,"stop")){cursorRamFree();monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM scan released; RAM touch off");return;}
+ if(!strcmp(arg,"touch off")){monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM TOUCH off");return;}
+ if(!strcmp(arg,"touch status")){Serial.printf("DOS RAM TOUCH enabled=%u coherent=%u XY=%u,%u writes=%u rejected=%u\n",unsigned(monkeyRamTouch),unsigned(monkeyRamCoherent()),vm?cursorWatchWord(cursorLogicalX):0,vm?cursorWatchWord(cursorLogicalY):0,monkeyRamWrites,monkeyRamRejects);return;}
+ if(!strcmp(arg,"touch on")){
+   if(!monkeyRamCoherent()||held||pendingPanel!=255||vm->cpu.prismaMouseInCall){Serial.println("DOS RAM TOUCH rejected: wait for stationary Monkey Island cursor and matching X/Y");return;}
+   cursorRamFree();cancelDirect();dos_mouse(0,0,false);
+   monkeyRamWrites=monkeyRamRejects=0;monkeyRamTouch=true;
+   Serial.printf("DOS RAM TOUCH on XY=%u,%u\n",cursorWatchWord(cursorLogicalX),cursorWatchWord(cursorLogicalY));return;
+ }
  if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){
    Serial.println("DOS RAM unavailable: enter Monkey Island and wait for game");return;
  }
@@ -1093,7 +1147,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R6 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R7 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1129,7 +1183,8 @@ void dos_tick(){
     directAt=0;directFlightClick=false;vm->cpu.prismaMousePending=false;++directTimeouts;
   }
   if(directRelease&&int32_t(millis()-directRelease)>=0){directRelease=0;dos_mouse(0,0,false);}
-  if(directQueued&&!directAt&&!directRelease&&!vm->cpu.prismaMouseInCall&&!launcher&&!loadingGame){
+  if(monkeyRamTouch)monkeyRamTick();
+  if(!monkeyRamTouch&&directQueued&&!directAt&&!directRelease&&!vm->cpu.prismaMouseInCall&&!launcher&&!loadingGame){
     vm->cpu.prismaMouseX=directX;vm->cpu.prismaMouseY=directY;directBefore=vm->cpu.prismaMouseApplied;
     directFlightClick=directClick;directQueued=directClick=false;vm->cpu.prismaMousePending=true;directAt=millis();
   }
@@ -1190,7 +1245,8 @@ void dos_tick(){
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
     Serial.printf("DOS MOUSE queries=%u positioned=%u in_call=%u touch_moves=%u timeouts=%u\n",vm->cpu.prismaMouseQueries,vm->cpu.prismaMouseApplied,(unsigned)vm->cpu.prismaMouseInCall,directMoves,directTimeouts);
-    if(activeGame==1){Serial.printf("DOS MOUSE TAP singles=%u double_req=%u clicks=%u pos_max_us=%u\n",monkeySingle,monkeyDouble,monkeyClicksApplied,monkeyPositionMaxUs);monkeyPositionMaxUs=0;}
+    if(activeGame==1){Serial.printf("DOS MOUSE TAP singles=%u double_req=%u clicks=%u pos_max_us=%u\n",monkeySingle,monkeyDouble,monkeyClicksApplied,monkeyPositionMaxUs);monkeyPositionMaxUs=0;
+     if(monkeyRamTouch)diag_logf(true,"DOS RAM TOUCH writes=%u rejected=%u XY=%u,%u\n",monkeyRamWrites,monkeyRamRejects,cursorWatchWord(cursorLogicalX),cursorWatchWord(cursorLogicalY));}
     Serial.printf("DOS OVERLAY keys=%u mode=%u\n",overlayKeys,__atomic_load_n(&panelMode,__ATOMIC_RELAXED));
     diag_logf(true, "DOS STACK main=%u lcd=%u internal_largest=%u\n",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree(),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     Serial.printf("DOS VGA capture_bytes=%u\n",captureBytes);captureBytes=0;
