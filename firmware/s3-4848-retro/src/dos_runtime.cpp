@@ -1451,7 +1451,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059S7 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 060 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1496,7 +1496,8 @@ void dos_tick(){
   if(startupActive)startupTick();
   servicePanel();
   static uint32_t maxSlice=0,maxCapture=0,captureTotalUs=0,captureN=0;
-  if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;++steps;
+  static uint64_t simulateTotalUs=0;
+  if(!launcher){traceMain(30);uint32_t t=micros();vm->simulate();traceMain(0);uint32_t elapsed=micros()-t;if(elapsed>maxSlice)maxSlice=elapsed;simulateTotalUs+=elapsed;++steps;
     if(cursorWatch||cursorAuto)cursorAutoTick();
     if(keyScanBase)keyScanTick();
     if(benchUntil&&int32_t(millis()-benchUntil)>=0){diag_logf(false, "DOS BENCH ips=%.0f elapsed_ms=%u\n",(vm->cpu.totalexec-benchInstructions)*1000.0/(millis()-benchStart),millis()-benchStart);benchUntil=0;host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
@@ -1548,6 +1549,7 @@ void dos_tick(){
     uint32_t skipped=__atomic_exchange_n(&host.video.skipped,0,__ATOMIC_RELAXED);
     uint32_t renderMax=__atomic_exchange_n(&host.video.renderMax,0,__ATOMIC_RELAXED);
     diag_logf(true, "DOS PERF steps=%u ips=%.0f display=%.1f fps blit=%u us skip=%u heap=%u psram=%u\n",steps,(nowInstructions-lastInstructions)*1000.0/elapsed,shown*1000.0/elapsed,shown?drawUs/shown:0,skipped,ESP.getFreeHeap(),ESP.getFreePsram());
+    const uint32_t gfxBusy=host.video.dropped;
     diag_logf(true, "DOS SLICE max_us=%u capture_max_us=%u render_core0_max_us=%u busy=%u launcher=%d\n",maxSlice,maxCapture,renderMax,host.video.dropped,(int)launcher);maxSlice=maxCapture=host.video.dropped=0;
     Serial.printf("DOS INPUT serial_keys=%u guest_reads=%u touch_clicks=%u queue_free=%d mode=%s\n",serialKeys,vm->input.prismaReadCount,touchClicks,vm->input.freeSlots(),mouseMode?"mouse":"keys");
     Serial.printf("DOS TEXT INPUT bytes=%u queued=%u delivered=%u pending=%u scan_sent=%u guest_reads=%u\n",serialBytes,textAccepted,textDelivered,textCount,vm->input.prismaSentCount,vm->input.prismaReadCount);
@@ -1573,6 +1575,12 @@ void dos_tick(){
     const uint32_t pixels=__atomic_exchange_n(&host.video.profilePixels,0,__ATOMIC_RELAXED);
     diag_logf(true,"DOS GFX jobs=%u capture_n=%u capture_avg=%u worker_avg=%u raster_est=%u\n",jobs,captureN,captureN?captureTotalUs/captureN:0,jobs?workerUs/jobs:0,jobs?rasterUs/jobs:0);
     diag_logf(true,"DOS GFX LCD n=%u clear_avg=%u copy_avg=%u flush_avg=%u pixels_avg=%u\n",presents,presents?clearUs/presents:0,presents?copyUs/presents:0,presents?flushUs/presents:0,presents?pixels/presents:0);
+    // Same interval and existing stage counters; no additional render or scan.
+    // Durations are independently sampled core-local work, not additive latency.
+    diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
+    diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
+    diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
+    simulateTotalUs=0;
     captureTotalUs=captureN=0;
     Serial.printf("DOS DISK reads=%u hits=%u read_us=%u mmap_reads=%u mmap_bytes=%u\n",diskReads,diskHits,diskReadUs,diskMappedReads,diskMappedBytes);diskReads=diskHits=diskReadUs=diskMappedReads=diskMappedBytes=0;
     lastInstructions=nowInstructions;
