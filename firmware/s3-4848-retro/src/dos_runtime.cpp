@@ -1261,18 +1261,22 @@ static void startupTick(){
  }
  if(startupKey){
    if(now-startupAt<100)return;
-   if(vm->input.prismaReadCount==startupReads&&now-startupAt<600)return;
-   const bool read=vm->input.prismaReadCount!=startupReads;
+   const unsigned reads=vm->input.prismaReadCount-startupReads;
    startupRelease();
-   if(!read){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP digit unconfirmed; use numeric pad to recover");return;}
    ++startupDigit;
-   if(startupDigit==4){startupFinish();return;}
+   // Completion means all four make/break pairs were submitted. Guest
+   // ACK is diagnostic only: changing scenes can change the input path.
+   Serial.printf("DOS STARTUP macro digit=%u/4 submitted guest_reads=%u\n",unsigned(startupDigit),reads);
+   if(startupDigit==4){
+     Serial.println("DOS STARTUP MACRO COMPLETE count=4 next_panel=0");
+     startupFinish();return;
+   }
    startupNext=startupAt+1000;return;
  }
  if(int32_t(now-startupNext)<0)return;
  if(startupDigit==4){startupFinish();return;}
- if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8){
-   if(now-startupNext>2000){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP input busy; use numeric pad");}
+ if(vm->input.freeSlots()<2){
+   if(now-startupNext>2000){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP macro queue full; use numeric pad");}
    return;
  }
  startupKey=asciiScan(startupLabel[startupDigit]);
@@ -1508,7 +1512,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059S5 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059S6 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
