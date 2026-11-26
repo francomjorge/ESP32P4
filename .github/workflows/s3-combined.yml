@@ -1,7 +1,7 @@
-name: S3 Retro - build 073 combined
+name: S3 Retro - build 074 combined
 on:
   push:
-    branches: [build-073-rep-vram]
+    branches: [build-074-chain4-bulk]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -483,6 +483,107 @@ jobs:
           p.write_text(src)
           p=path("Video.h","prismaVgaCounts")
           edit(p,[("    void prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f);","    void prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f);\n    void prismaVgaModeCounts(uint32_t *out);")])
+          # 074: bounded chain-4 bulk writes for the existing 073 MOVSW path.
+          # Preserve guest RAM mirror, exact dirty bitmap, VGA counters and
+          # updatedscreen. No latch changes, mode changes or map wrap.
+          p=path("Video.cpp","prismaVgaModeCounts")
+          src=p.read_text()
+          bulk=r"""
+          bool Video::prismaChain4WriteBlock(uint32_t guest,const uint8_t *data,unsigned bytes){
+            if(bytes<4||bytes>64||guest<0xa0000||guest>0xc0000-bytes||
+               !(vga_misc&2)||(vga_gfxd[5]&0x10)||!(vga_seqd[4]&8)||
+               (vga_memmask!=0xffff&&vga_memmask!=0x7fff))return false;
+            const unsigned a=(guest-0xa0000-vga_membase)&vga_memmask;
+            if(bytes-1>vga_memmask-a)return false;
+            uint8_t staged[64],lane[16];
+            memcpy(staged,data,bytes);
+            memcpy(vm.memory.RAM+guest,staged,bytes);
+            for(unsigned p=0;p<4;++p){
+              const unsigned first=(p+4-(a&3))&3;
+              if(first>=bytes)continue;
+              const unsigned count=(bytes-first+3)/4;
+              for(unsigned k=0;k<count;++k)lane[k]=staged[first+4*k];
+              unsigned at=(a+first)>>2,k=0;
+              while(k<count){
+                const unsigned block=at>>6;
+                const unsigned room=64-(at&63);
+                const unsigned n=(count-k<room)?count-k:room;
+                uint32_t &word=prismaDirty[p][block>>5];
+                const uint32_t bit=1u<<(block&31);
+                uint8_t *dst=vga_RAM[p]+at;
+                if(word&bit){memcpy(dst,lane+k,n);}
+                else if(memcmp(dst,lane+k,n)){memcpy(dst,lane+k,n);word|=bit;}
+                at+=n;k+=n;
+              }
+            }
+            prismaVgaWrites+=bytes;prismaVgaModes[1]+=bytes;prismaVgaFast+=bytes;
+            updatedscreen=1;
+            return true;
+          }
+          """
+          old="uint8_t Video::readVGA("
+          assert src.count(old)==1
+          src=src.replace(old,bulk+"\n"+old,1)
+          p.write_text(src)
+          p=path("Video.h","prismaVgaModeCounts")
+          edit(p,[("    void prismaVgaModeCounts(uint32_t *out);","    void prismaVgaModeCounts(uint32_t *out);\n    bool prismaChain4WriteBlock(uint32_t guest,const uint8_t *data,unsigned bytes);")])
+          # Compile the exact new implementation against a minimal memory
+          # model and compare with the original per-byte chain-4 semantics.
+          test=r'''
+          #include <cstdint>
+          #include <cstring>
+          #include <cassert>
+          #include <random>
+          static uint8_t planes[4][65536],reference[4][65536],ram[0xc0000],refRam[0xc0000];
+          static uint8_t *vga_RAM[4]={planes[0],planes[1],planes[2],planes[3]};
+          static uint32_t prismaDirty[4][32],refDirty[4][32],prismaVgaWrites,prismaVgaModes[4],prismaVgaFast;
+          struct Video{
+            struct {struct {uint8_t *RAM=ram;} memory;} vm;
+            unsigned vga_misc=2,vga_gfxd[16]={},vga_seqd[8]={},vga_membase=0,vga_memmask=65535;
+            unsigned updatedscreen=0;
+            bool prismaChain4WriteBlock(uint32_t,const uint8_t *,unsigned);
+          };
+          '''+bulk+r'''
+          int main(){
+            std::mt19937 rng(74);Video v;v.vga_seqd[4]=8;
+            uint32_t writes=0;
+            for(unsigned i=0;i<40000;++i){
+              unsigned n=4+2*(rng()%31),guest=0xa0000+rng()%0x20000;
+              v.vga_memmask=(i&1)?65535:32767;
+              v.vga_membase=(i&1)?0:0x10000;
+              if(i%7==0)guest=0xa0000+(rng()%1024)*256+(rng()%9)-4;
+              unsigned a=(guest-0xa0000-v.vga_membase)&v.vga_memmask;
+              uint8_t src[64];for(unsigned k=0;k<n;++k)src[k]=(i%3==0&&guest>=0xa0000&&guest<=0xc0000-n)?refRam[guest+k]:uint8_t(rng());
+              v.vga_misc=(i%13)?2:0;v.vga_gfxd[5]=(i%17)?0:16;v.vga_seqd[4]=(i%19)?8:0;
+              v.updatedscreen=0;
+              bool ok=guest>=0xa0000&&guest<=0xc0000-n&&n-1<=v.vga_memmask-a&&(v.vga_misc&2)&&!(v.vga_gfxd[5]&16)&&(v.vga_seqd[4]&8);
+              assert(v.prismaChain4WriteBlock(guest,src,n)==ok);
+              assert(v.updatedscreen==unsigned(ok));
+              if(ok){
+                writes+=n;
+                for(unsigned k=0;k<n;++k){
+                  unsigned p=(a+k)&3,at=(a+k)>>2,block=at>>6;
+                  refRam[guest+k]=src[k];
+                  if(reference[p][at]!=src[k]){reference[p][at]=src[k];refDirty[p][block>>5]|=1u<<(block&31);}
+                  assert(planes[p][at]==reference[p][at]);assert(ram[guest+k]==src[k]);
+                }
+              }
+              if(i%128==0){
+                assert(!memcmp(planes,reference,sizeof(planes)));
+                assert(!memcmp(ram,refRam,sizeof(ram)));
+                assert(!memcmp(prismaDirty,refDirty,sizeof(refDirty)));
+                memset(prismaDirty,0,sizeof(prismaDirty));memset(refDirty,0,sizeof(refDirty));
+              }
+            }
+            assert(!memcmp(planes,reference,sizeof(planes)));assert(!memcmp(ram,refRam,sizeof(ram)));
+            assert(!memcmp(prismaDirty,refDirty,sizeof(refDirty)));
+            assert(prismaVgaWrites==writes&&prismaVgaModes[1]==writes&&prismaVgaFast==writes);
+          }
+          '''
+          Path("/tmp/prisma074-chain4.cpp").write_text(test)
+          subprocess.run(["g++","-O2","-std=c++17","/tmp/prisma074-chain4.cpp","-o","/tmp/prisma074-chain4"],check=True)
+          subprocess.run(["/tmp/prisma074-chain4"],check=True)
+          print("074 chain-4 exact helper differential test: 40000 blocks passed")
           # 070: instrument guest polling of VGA status; do not alter the
           # virtual raster timing or the value returned to the guest.
           p=path("Video.cpp","prismaVgaModeCounts")
@@ -882,7 +983,7 @@ jobs:
                   # Conventional -> conventional remains on the old memcpy path.
                   snippet=snippet.replace("dst+bytes<=0xa0000", "(dst+bytes<=0xa0000 || (dst>=0xa0000 && dst+bytes<=0xc0000))")
                   snippet=snippet.replace("unsigned room=(nextTiming-loopcount)/2;", "unsigned room=nextTiming>loopcount?(nextTiming-loopcount)/2:0;")
-                  body="if(dst>=0xa0000){for(unsigned k=0;k<bytes;k+=2)vm.memory.writeWord(dst+k,prismaRead16(vm,srcaddr+k));if(prismaProfileOn){++prismaProfileVramBatches;prismaProfileVramWords+=n;}}else{"+body+"}"
+                  body="if(dst>=0xa0000){if(vm.video.prismaChain4WriteBlock(dst,vm.memory.RAM+srcaddr,bytes)){if(prismaProfileOn){++prismaProfileChainBatches;prismaProfileChainBytes+=bytes;}}else{for(unsigned k=0;k<bytes;k+=2)vm.memory.writeWord(dst+k,prismaRead16(vm,srcaddr+k));}if(prismaProfileOn){++prismaProfileVramBatches;prismaProfileVramWords+=n;}}else{"+body+"}"
               snippet=snippet.replace("BODY",body).replace("SIUPDATE","regs.wordregs[regsi]=si+bytes;" if mov else "")
               src=src[:i]+snippet+src[i:]
           p.write_text('#include <string.h>\n'+src)
@@ -1085,11 +1186,13 @@ jobs:
           static uint32_t prismaProfileRng=0x72819u;
           static uint32_t prismaProfileCounters[10]={};
           static uint32_t prismaProfileVramBatches=0,prismaProfileVramWords=0;
+          static uint32_t prismaProfileChainBatches=0,prismaProfileChainBytes=0;
           static uint32_t prismaOpcodes[256]={};
           static PrismaPC prismaPCs[256]={};
           static void prismaProfileClear(){
             memset(prismaProfileCounters,0,sizeof(prismaProfileCounters));
             prismaProfileVramBatches=prismaProfileVramWords=0;
+            prismaProfileChainBatches=prismaProfileChainBytes=0;
             memset(prismaOpcodes,0,sizeof(prismaOpcodes));
             memset(prismaPCs,0,sizeof(prismaPCs));
           }
@@ -1116,6 +1219,7 @@ jobs:
             memcpy(out,prismaProfileCounters,sizeof(prismaProfileCounters));
             memset(out+10,0,12*sizeof(uint32_t));
             out[25]=prismaProfileVramBatches;out[26]=prismaProfileVramWords;
+            out[27]=prismaProfileChainBatches;out[28]=prismaProfileChainBytes;
             // Three most frequently sampled guest addresses and opcodes.
             for(const auto &e:prismaPCs)if(e.count){
               for(unsigned j=0;j<3;++j)if(e.count>out[11+2*j]){
@@ -1362,13 +1466,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-073-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-073-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-073.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-074-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-074-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-074.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-073-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-074-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1377,6 +1481,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-073
+          name: PRISMA-RETRO-S3-074
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
