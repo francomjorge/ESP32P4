@@ -1193,7 +1193,7 @@ enum StartupState : uint8_t { START_WAIT,START_SEARCH,START_READY,START_TYPE };
 static StartupState startupState=START_WAIT;
 static uint16_t startupNumber=0,startupSample=0;
 static uint8_t startupDigit=0,startupKey=0;
-static uint32_t startupAt=0,startupNext=0,startupStable=0,startupReads=0,startupDrainAt=0;
+static uint32_t startupAt=0,startupNext=0,startupStable=0,startupReads=0;
 static char startupLabel[5]="----";
 static void startupRelease(){
  if(vm&&startupKey){vm->input.handleKeyUp(startupKey);vm->input.tick();}
@@ -1201,7 +1201,7 @@ static void startupRelease(){
 }
 static void startupReset(bool active){
  startupRelease();startupActive=active;startupState=START_WAIT;
- startupNumber=startupSample=0;startupDigit=0;startupAt=startupNext=startupStable=startupDrainAt=0;
+ startupNumber=startupSample=0;startupDigit=0;startupAt=startupNext=startupStable=0;
  memcpy(startupLabel,"----",5);
  startupBaseline=active&&vm?vm->memory.readWord(startupNumberAddress):0;
 }
@@ -1235,7 +1235,7 @@ static void startupType(){
    startupState=START_WAIT;memcpy(startupLabel,"----",5);panelRepaint=true;Serial.println("DOS STARTUP candidate changed; search again");return;
  }
  if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8)return;
- cancelDirect();startupDigit=0;startupKey=0;startupDrainAt=0;startupState=START_TYPE;
+ cancelDirect();startupDigit=0;startupKey=0;startupState=START_TYPE;
  startupAt=startupNext=millis();panelRepaint=true;
  Serial.println("DOS STARTUP typing four digits");
 }
@@ -1265,20 +1265,12 @@ static void startupTick(){
    const bool read=vm->input.prismaReadCount!=startupReads;
    startupRelease();
    if(!read){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP digit unconfirmed; use numeric pad to recover");return;}
-   ++startupDigit;startupNext=startupAt+1000;return;
+   ++startupDigit;
+   if(startupDigit==4){startupFinish();return;}
+   startupNext=startupAt+1000;return;
  }
  if(int32_t(now-startupNext)<0)return;
- if(startupDigit==4){
-   if(!startupDrainAt){startupDrainAt=now;monkeyInputReport("startup_drain_begin");}
-   const bool drained=vm->input.freeSlots()==256&&vm->input.prismaSentCount==vm->input.prismaReadCount&&!(vm->pic.isr&2);
-   if(drained){startupFinish();return;}
-   if(now-startupDrainAt>=2500){
-     // Do not silently purge keys or PIC state. Preserve manual recovery.
-     monkeyInputReport("startup_drain_timeout");
-     startupFinish();
-   }
-   return;
- }
+ if(startupDigit==4){startupFinish();return;}
  if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8){
    if(now-startupNext>2000){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP input busy; use numeric pad");}
    return;
