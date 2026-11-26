@@ -552,9 +552,14 @@ static uint32_t cursorYIndex=0,cursorYCounts[2]={},cursorYAddr[2][24]={};
 static unsigned cursorYRounds=0,cursorYExpected=0,cursorYLast=0;
 static bool cursorYBusy=false,cursorYActive=false;
 static uint32_t cursorYDue=0;
+static bool cursorYSeen[200]={};
+static unsigned cursorYDistinct=0;
+static uint32_t cursorYProbeAddr=0;
+static unsigned cursorYProbeTarget=0,cursorYProbeX=0;
+static bool cursorYProbePending=false;
 static void cursorYFree(){
  free(cursorYSnapshot);free(cursorYMasks);cursorYSnapshot=cursorYMasks=nullptr;
- cursorYBusy=cursorYActive=false;cursorYRounds=0;cursorYDue=0;
+ cursorYBusy=cursorYActive=false;cursorYRounds=0;cursorYDue=0;cursorYDistinct=0;memset(cursorYSeen,0,sizeof(cursorYSeen));cursorYProbePending=false;
 }
 static void cursorYList(){
  if(!cursorYActive){Serial.println("DOS YFIND inactive");return;}
@@ -598,9 +603,45 @@ static void cursorYSlice(){
  cursorYIndex=end;
  if(end!=CURSOR_RAM_N-1)return;
  ++cursorYRounds;cursorYLast=cursorYExpected;cursorYBusy=false;
+ if(cursorYLast<200&&!cursorYSeen[cursorYLast]){cursorYSeen[cursorYLast]=true;++cursorYDistinct;}
  // Avoid flooding the terminal while hundreds of candidates remain.
  Serial.printf("DOS YFIND count rounds=%u y=%u Y16=%u Y8=%u\n",cursorYRounds,cursorYLast,cursorYCounts[0],cursorYCounts[1]);
  if(cursorYRounds>=3&&cursorYCounts[0]<=24&&cursorYCounts[1]<=24)cursorYList();
+}
+// The low byte suffices for 0..199, even if the candidate is a word.
+// Never guess an adjacent address or write to multiple candidates at once.
+static bool cursorYEligible(uint32_t a,unsigned y){
+ if(a<CURSOR_RAM_BASE||a>=CURSOR_RAM_END-1)return false;
+ if((a>=cursorRenderX&&a<cursorRenderY+2)||(a>=cursorLogicalX&&a<cursorLogicalX+2))return false;
+ const uint32_t i=a-CURSOR_RAM_BASE;
+ const uint8_t bit=uint8_t(1u<<(i&7));
+ const bool word=(cursorYMasks[i>>3]&bit)&&cursorWatchWord(a)==y;
+ const bool byte=(cursorYMasks[CURSOR_MASK_N+(i>>3)]&bit)&&vm->memory.readByte(a)==y;
+ return word||byte;
+}
+static void cursorTestY(int y,uint32_t selected){
+ if(y<0||y>199||!cursorProbeSafe()||!cursorYActive||cursorYBusy||!cursorYMasks||cursorYDistinct<3){
+   Serial.println("DOS YTEST rejected: watch/yfind, three distinct Y samples, idle cursor, Y=0..199 required");return;
+ }
+ const unsigned current=cursorWatchWord(cursorRenderY)-9;
+ if(unsigned(y)==current){Serial.println("DOS YTEST choose a different Y");return;}
+ uint32_t a=selected;
+ if(!a){
+   // Use the small enumerated candidate lists only if complete.
+   if(cursorYCounts[0]>24||cursorYCounts[1]>24){Serial.println("DOS YTEST too many candidates; continue yfind");return;}
+   for(unsigned m=0;m<2;++m)for(unsigned j=0;j<cursorYCounts[m];++j){
+     uint32_t v=cursorYAddr[m][j];
+     if(!cursorYEligible(v,current))continue;
+     if(a&&a!=v){Serial.println("DOS YTEST ambiguous; use ylist and continue yfind or specify candidate address");return;}
+     a=v;
+   }
+ }
+ if(!a||!cursorYEligible(a,current)){Serial.println("DOS YTEST candidate rejected: not in scan results or current Y mismatch");return;}
+ cursorWatchLog("beforeY",0);
+ cursorYProbeAddr=a;cursorYProbeTarget=unsigned(y);cursorYProbeX=cursorWatchWord(cursorLogicalX);
+ vm->memory.writeByte(a,uint8_t(y));
+ Serial.printf("DOS YTEST write addr=%05lx old=%u target=%u read=%u X=%u\n",(unsigned long)a,current,unsigned(y),unsigned(vm->memory.readByte(a)),cursorYProbeX);
+ cursorYProbePending=true;cursorProbeStart=millis();cursorProbePhase=1;
 }
 static void cursorWatchTick(){
  if(!cursorWatch)return;
@@ -608,10 +649,13 @@ static void cursorWatchTick(){
  if(cursorProbePhase){
    const uint32_t elapsed=millis()-cursorProbeStart;
    const unsigned due=cursorProbePhase==1?100:cursorProbePhase==2?500:1000;
-   if(held){cursorProbePhase=0;Serial.println("DOS RAM PROBE readback cancelled by input");}
+   if(held){cursorProbePhase=0;cursorYProbePending=false;Serial.println("DOS RAM PROBE readback cancelled by input");}
    else if(elapsed>=due){
      cursorWatchLog(cursorProbePhase==1?"after100":cursorProbePhase==2?"after500":"after1000",0);
-     if(++cursorProbePhase>3)cursorProbePhase=0;
+     if(cursorYProbePending){
+       Serial.printf("DOS YTEST after%u addr=%05lx value=%u target=%u renderY=%u X=%u expectedX=%u\n",due,(unsigned long)cursorYProbeAddr,unsigned(vm->memory.readByte(cursorYProbeAddr)),cursorYProbeTarget,cursorWatchWord(cursorRenderY),cursorWatchWord(cursorLogicalX),cursorYProbeX);
+     }
+     if(++cursorProbePhase>3){cursorProbePhase=0;cursorYProbePending=false;}
    }
  }
  const uint8_t k=held;
@@ -795,6 +839,14 @@ void dos_cursor_scan(const char *arg){
    return;
  }
  if(!strcmp(arg,"ylist")){cursorYList();return;}
+ if(!strncmp(arg,"testy ",6)){
+   int y;unsigned long a=0;char tail;
+   const int n=sscanf(arg+6,"%d %lx %c",&y,&a,&tail);
+   if(n!=1&&n!=2){Serial.println("DOS YTEST use :cursor testy Y [hexaddr]");return;}
+   // A second token must be a valid hex address, not silently ignored.
+   if(n==1&&sscanf(arg+6,"%d %c",&y,&tail)!=1){Serial.println("DOS YTEST invalid address");return;}
+   cursorTestY(y,uint32_t(a));return;
+ }
  if(!strncmp(arg,"test ",5)){
    int x,y;char tail;
    if(sscanf(arg+5,"%d %d %c",&x,&y,&tail)!=2){Serial.println("DOS RAM PROBE use :cursor test X Y");return;}

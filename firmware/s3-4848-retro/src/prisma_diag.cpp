@@ -39,7 +39,7 @@ static void exportLog(bool perf){
 static void runCommand(){
  if(overflow){Serial.println("PRISMA ERR command too long");return;}
  line[used]=0;
- if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :cursor watch/yfind/ylist/test X Y/testx X/auto/base/right/left/down/up/list/stop ; :: sends literal colon");
+ if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :perf :mem :tasks :log :crash :debug on :debug off :bench :cursor watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop ; :: sends literal colon");
  else if(!strcmp(line,"status"))prisma_diag_status();
  else if(!strcmp(line,"perf"))exportLog(true);
  else if(!strcmp(line,"log"))exportLog(false);
