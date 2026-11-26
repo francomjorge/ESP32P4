@@ -49,12 +49,11 @@ static constexpr uint32_t startupNumberAddress=0x349c4;
 static void startupReset(bool active);
 static void startupTick();
 static void startupSearch();
-static void startupType();
 static void startupFinish();
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
-static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:(activeGame==1&&(p==0||p==8))?384:432;}
+static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:(p==2||p==9)?360:p==3?480:(activeGame==1&&(p==0||p==8))?384:432;}
 static uint32_t overlayKeys=0;
-static void drawPanel();
+static void drawPanel(bool full);
 static void setPanel(uint8_t mode);
 static uint32_t serialKeys=0,touchClicks=0;
 static const char *gameNames[]={"Carmen Sandiego","Monkey Island VGA"};
@@ -1165,19 +1164,14 @@ static const OverlayKey monkeyGameMenu[5]={{"GUARDAR",63},{"CARGAR",63},{"S",31}
 static bool panelRepaint=false;
 static uint8_t mods=0;
 // Startup-only UI. User confirms the displayed number; never patches game RAM.
-enum StartupState : uint8_t { START_WAIT,START_SEARCH,START_READY,START_TYPE };
+enum StartupState : uint8_t { START_WAIT,START_SEARCH,START_READY };
 static StartupState startupState=START_WAIT;
 static uint16_t startupNumber=0,startupSample=0;
-static uint8_t startupDigit=0,startupKey=0;
-static uint32_t startupAt=0,startupNext=0,startupStable=0,startupReads=0;
+static uint32_t startupAt=0,startupNext=0,startupStable=0;
 static char startupLabel[5]="----";
-static void startupRelease(){
- if(vm&&startupKey){vm->input.handleKeyUp(startupKey);vm->input.tick();}
- startupKey=0;
-}
 static void startupReset(bool active){
- startupRelease();startupActive=active;startupState=START_WAIT;
- startupNumber=startupSample=0;startupDigit=0;startupAt=startupNext=startupStable=0;
+ startupActive=active;startupState=START_WAIT;
+ startupNumber=startupSample=0;startupAt=startupNext=startupStable=0;
  memcpy(startupLabel,"----",5);
  startupBaseline=active&&vm?vm->memory.readWord(startupNumberAddress):0;
 }
@@ -1191,66 +1185,38 @@ static void startupReady(uint16_t n){
  Serial.printf("DOS STARTUP number=%u addr=349c4 candidate; confirm on screen\n",unsigned(n));
 }
 static void startupSearch(){
- if(!startupAvailable()||startupState==START_TYPE)return;
+ if(!startupAvailable())return;
  const uint16_t n=vm->memory.readWord(startupNumberAddress);
  startupAt=millis();startupNext=startupAt+100;startupStable=startupAt;startupSample=n;
  startupNumber=0;memcpy(startupLabel,"----",5);
  Serial.println("DOS STARTUP search requested; no keyboard input");
- startupState=START_SEARCH;panelRepaint=true;
+ startupState=START_SEARCH;setPanel(9);
 }
 static void startupEnter(){
- if(!startupAvailable()||startupState==START_TYPE)return;
+ if(!startupAvailable())return;
  if(monkeyClickPending||monkeyClickDown)return;
  cancelDirect();
  if(!monkeyClickRequest(false,"startup-enter"))return;
  startupState=START_WAIT;startupNumber=0;memcpy(startupLabel,"----",5);panelRepaint=true;
 }
-static void startupType(){
- if(!startupAvailable()||startupState!=START_READY)return;
- if(vm->memory.readWord(startupNumberAddress)!=startupNumber){
-   startupState=START_WAIT;memcpy(startupLabel,"----",5);panelRepaint=true;Serial.println("DOS STARTUP candidate changed; search again");return;
- }
- if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8)return;
- cancelDirect();startupDigit=0;startupKey=0;startupState=START_TYPE;
- startupAt=startupNext=millis();panelRepaint=true;
- Serial.println("DOS STARTUP typing four digits");
-}
 static void startupFinish(){
- startupRelease();startupActive=false;startupState=START_WAIT;
- keyScanFree();cancelDirect();setPanel(0);
- Serial.println("DOS STARTUP controls closed; game acceptance not independently verified");
+ startupActive=false;startupState=START_WAIT;
+ keyScanFree();setPanel(0);
+ Serial.println("DOS STARTUP manual ENTER; next_panel=0");
 }
 static void startupTick(){
- if(!startupActive||startupState==START_WAIT||startupState==START_READY)return;
- if(!startupAvailable()){startupRelease();startupState=START_WAIT;memcpy(startupLabel,"----",5);panelRepaint=true;return;}
+ if(!startupActive||startupState!=START_SEARCH)return;
+ if(!startupAvailable()){startupState=START_WAIT;panelRepaint=true;return;}
  const uint32_t now=millis();
- if(startupState==START_SEARCH){
-   if(int32_t(now-startupNext)<0)return;
-   startupNext=now+100;
-   const uint16_t n=vm->memory.readWord(startupNumberAddress);
-   if(n!=startupSample){startupSample=n;startupStable=now;}
-   if(!monkeyClickPending&&!monkeyClickDown&&startupValid(n)&&now-startupStable>=300){startupReady(n);return;}
-   if(now-startupAt>=3500){startupState=START_WAIT;panelRepaint=true;Serial.println("DOS STARTUP no stable candidate; press search again");}
-   return;
- }
- if(startupKey){
-   if(now-startupAt<100)return;
-   if(vm->input.prismaReadCount==startupReads&&now-startupAt<600)return;
-   const bool read=vm->input.prismaReadCount!=startupReads;
-   startupRelease();
-   if(!read){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP digit unconfirmed; use numeric pad to recover");return;}
-   ++startupDigit;startupNext=startupAt+1000;return;
- }
  if(int32_t(now-startupNext)<0)return;
- if(startupDigit==4){startupFinish();return;}
- if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8){
-   if(now-startupNext>2000){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP input busy; use numeric pad");}
-   return;
+ startupNext=now+100;
+ const uint16_t n=vm->memory.readWord(startupNumberAddress);
+ if(n!=startupSample){startupSample=n;startupStable=now;}
+ if(startupValid(n)&&now-startupStable>=300){startupReady(n);return;}
+ if(now-startupAt>=3500){
+   startupState=START_WAIT;panelRepaint=true;
+   Serial.println("DOS STARTUP no stable reference; tap reference to retry");
  }
- startupKey=asciiScan(startupLabel[startupDigit]);
- startupAt=now;startupReads=vm->input.prismaReadCount;
- vm->input.handleKeyDown(startupKey);vm->input.tick();
- Serial.printf("DOS STARTUP digit %u/4 queued\n",unsigned(startupDigit+1));
 }
 static void cell(const OverlayKey &k,int x,int y,int w,int h){
  bool active=(k.scan==240&&(mods&1))||(k.scan==241&&(mods&2))||(k.scan==242&&(mods&4));
@@ -1276,10 +1242,10 @@ static void numericCell(const PanelKey &k,int top){
  dosLcd->setTextColor(0xffff);dosLcd->setTextSize(4);
  dosLcd->setCursor(x+(w-24)/2,y+(h-32)/2);dosLcd->print(k.key.label);
 }
-static void drawPanel(){
+static void drawPanel(bool full){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(m==3)return;
- dosLcd->fillRect(0,top,480,480-top,0x0842);
+ if(m!=9||full)dosLcd->fillRect(0,top,480,480-top,0x0842);
  if(m==1||m==4){unsigned n=0;for(const auto &k:keyboard){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%10==0)vTaskDelay(1);}}
  else if(m==2){
    unsigned n=0;
@@ -1287,12 +1253,23 @@ static void drawPanel(){
    else{for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
  }
  else if(activeGame==1&&m==8){
-   const bool typing=startupState==START_TYPE;
-   cell({"ENTER",uint8_t(typing?0:28)},16,top,96,96);
-   cell({startupState==START_SEARCH?"BUSCANDO":"CLAVE",uint8_t(typing?0:245)},128,top,96,96);
-   cell({startupLabel,uint8_t(startupState==START_READY?255:0)},240,top,96,96);
-   cell({"ESC",uint8_t(typing?0:1)},384,top,96,48);
-   cell({"MENU",uint8_t(typing?0:251)},384,top+48,96,48);
+   cell({"ENTER",28},16,top,96,96);
+   cell({"CLAVE",245},128,top,96,96);
+   cell({"ESC",1},384,top,96,48);
+   cell({"MENU",251},384,top+48,96,48);
+ }
+ else if(activeGame==1&&m==9){
+   if(full){
+     for(unsigned i=0;i<10;++i)numericCell(monkeyNumeric[i],top);
+     cell({"ENTER",28},300,top+60,180,60);
+   }
+   // Reference only. Touching it retries the lookup, never types.
+   dosLcd->fillRoundRect(302,top+2,176,56,4,0x2124);
+   dosLcd->drawRoundRect(302,top+2,176,56,4,0x7bef);
+   dosLcd->setTextColor(0x7bef);dosLcd->setTextSize(1);
+   dosLcd->setCursor(333,top+9);dosLcd->print("CLAVE REFERENCIA");
+   dosLcd->setTextSize(3);dosLcd->setTextColor(startupState==START_READY?0xffff:0x7bef);
+   dosLcd->setCursor(354,top+25);dosLcd->print(startupLabel);
  }
  else if(activeGame==1&&m==0){unsigned i=0;for(const auto &k:monkeyQuick){quickCell(k,monkeyQuickNames[i++],top);}}
  else if(activeGame==1&&m==5){for(int c=0;c<5;c++){const OverlayKey k=startupActive&&c==0?OverlayKey{"JUGAR",238}:monkeyMenu[c];cell(k,c*96,top,96,48);}}
@@ -1303,7 +1280,7 @@ static void drawPanel(){
 }
 // Requests never block the producer behind an in-flight VGA frame.
 static void setPanel(uint8_t mode){
- if(mode>8||!vm||(mode>=7&&activeGame!=1))return;
+ if(mode>9||!vm||(mode>=7&&activeGame!=1))return;
  pendingPanel=mode;
 }
 static void servicePanel(){
@@ -1322,7 +1299,7 @@ static void servicePanel(){
    cancelDirect();dos_key(0);dos_mouse(0,0,false);
    traceMain(21);if(panelTop()!=previousTop){dosLcd->fillScreen(0);vTaskDelay(1);}
  }
- drawPanel();traceMain(22);dosLcd->flush(true);
+ drawPanel(change);traceMain(22);dosLcd->flush(true);
  if(change&&panelTop()!=previousTop){host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
  if(async)host.video.release();
  if(change)diag_logf(false,"DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
@@ -1338,12 +1315,14 @@ static uint8_t hitPanel(int x,int y){
    else{for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
  }
  else if(activeGame==1&&m==8){
-   if(startupState==START_TYPE)return 0;
    if(x>=16&&x<112)return 28;
    if(x>=128&&x<224)return 245;
-   if(x>=240&&x<336)return startupState==START_READY?255:0;
    if(x>=384)return y<48?1:251;
    return 0;
+ }
+ else if(activeGame==1&&m==9){
+   for(unsigned i=0;i<10;++i){const auto &k=monkeyNumeric[i];if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
+   return x>=300?(y<60?245:28):0;
  }
  else if(activeGame==1&&m==0){for(const auto &k:monkeyQuick)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
  else if(activeGame==1&&m==5)return startupActive&&x<96?238:monkeyMenu[x/96].scan;
@@ -1379,7 +1358,6 @@ void dos_touch_game(unsigned n,int x,int y){
  if(launcher||bootPhase||loadingGame||pendingPanel!=255){monkeyTapArmed=false;finger=moved=drag=panelTouch=repeatStarted=false;pending=0;dos_key(0);return;}
  const bool absolute=activeGame>=0&&activeGame<2;
  const bool monkey=activeGame==1;
- if(monkey&&startupActive&&startupState==START_TYPE){finger=moved=drag=panelTouch=repeatStarted=false;pending=0;return;}
  if(n>1&&absolute){cancelDirect();dos_mouse(0,0,false);}
  if(n!=1){
    if(finger&&panelTouch&&n==0&&pending&&!repeatStarted){
@@ -1389,7 +1367,8 @@ void dos_touch_game(unsigned n,int x,int y){
      else if(k==251)setPanel(5);else if(k==252)setPanel(6);else if(k==254&&monkey)setPanel(7);
      else if(monkey&&startupActive&&k==28&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==8)startupEnter();
      else if(monkey&&startupActive&&k==245)startupSearch();
-     else if(monkey&&startupActive&&k==255)startupType();
+     else if(monkey&&startupActive&&k==28&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==9){dos_key(0);startupFinish();}
+     else if(monkey&&startupActive&&k>=2&&k<=11&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==9){/* key-up below */}
      else if(monkey&&startupActive&&k==238)startupFinish();
      else if(k==63&&monkey&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==7){overlayTap(k);diag_logf(false,"DOS SAVE/LOAD native F5; disk read-only\n");}
      else if(k==253&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==6){diag_logf(false,"DOS EXIT cause=confirmed_menu\n");dos_request_exit();}
@@ -1419,12 +1398,12 @@ void dos_touch_game(unsigned n,int x,int y){
   finger=true;px=ox=x;py=oy=y;started=millis();moved=drag=repeatStarted=false;
   pending=hitPanel(x,y);panelTouch=y>=panelTop();
   if(!panelTouch&&x<56&&y<56&&(!absolute||__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3)){panelTouch=true;pending=__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==3?243:249;}
-  if(panelTouch){monkeyTapArmed=false;if(pending&&pending<240&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==2&&!(monkey&&monkeyRamTouch&&pending==28)){if(monkey)cursorAutoBegin(pending);dos_key(pending);++overlayKeys;}return;}
+  if(panelTouch){monkeyTapArmed=false;const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);if(m==9&&((pending>=2&&pending<=11)||pending==28)){dos_key(pending);++overlayKeys;}else if(pending&&pending<240&&m==2&&!(monkey&&monkeyRamTouch&&pending==28)){if(monkey)cursorAutoBegin(pending);dos_key(pending);++overlayKeys;}return;}
   if(absolute)queueDirect(x,y,false);
  }
  if(panelTouch){
    const uint8_t currentMode=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);
-   if((currentMode==0||currentMode==5||currentMode==6||currentMode==7||currentMode==8)&&(hitPanel(x,y)!=pending)){if(repeatStarted)dos_key(0);pending=0;return;}
+   if((currentMode==0||currentMode==5||currentMode==6||currentMode==7||currentMode==8||currentMode==9)&&(hitPanel(x,y)!=pending)){if(repeatStarted||currentMode==9)dos_key(0);pending=0;return;}
    // Carmen only: keep the verified short tap path. After a deliberate
    // hold, send physical make/break and bounded typematic make codes.
    if(activeGame==0&&(pending==28||pending==57)&&
@@ -1472,7 +1451,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059S4 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059S7 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
