@@ -42,6 +42,7 @@ static uint64_t benchInstructions=0;
 static bool hideGuest=true;
 static bool mouseMode=true,consoleMode=false;
 static int activeGame=-1;
+static uint8_t pendingPanel=255;
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
 static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:432;}
 static uint32_t overlayKeys=0;
@@ -976,7 +977,7 @@ static const PanelKey pad[]={
 static const OverlayKey toolbar[5]={{"TEXTO",248},{"PAD",244},{"ESC",1},{"ENTER",28},{"MENU",251}};
 static const OverlayKey gameMenu[4]={{"GRABAR",0},{"CARGAR",0},{"VOLVER",243},{"SALIR",252}};
 static const OverlayKey exitMenu[2]={{"CANCELAR",251},{"CONFIRMAR SALIR",253}};
-static uint8_t pendingPanel=255;
+
 static bool panelRepaint=false;
 static uint8_t mods=0;
 static void cell(const OverlayKey &k,int x,int y,int w,int h){
