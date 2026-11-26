@@ -54,7 +54,7 @@ static void startupFinish();
 static uint8_t panelMode=0; // 0 mouse toolbar, 1 keyboard, 2 gamepad, 3 full, 4 Carmen text
 static int panelTop(){const uint8_t p=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);return p==1||p==4?280:p==2?360:p==3?480:(activeGame==1&&(p==0||p==8))?384:432;}
 static uint32_t overlayKeys=0;
-static void drawPanel();
+static void drawPanel(bool full);
 static void setPanel(uint8_t mode);
 static uint32_t serialKeys=0,touchClicks=0;
 static const char *gameNames[]={"Carmen Sandiego","Monkey Island VGA"};
@@ -314,6 +314,10 @@ static bool monkeyRamBlocked=false;
 // Do not reuse held: dos_touch_game releases that key on finger-up.
 static bool monkeyClickPending=false,monkeyClickDown=false,monkeyClickMouse=false;
 static uint32_t monkeyClickAt=0,monkeyClickRead=0,monkeyClickWait=0;
+static void monkeyInputReport(const char *event){
+ if(!vm)return;
+ Serial.printf("DOS KEYSTATE %s held=%u sent=%u read=%u free=%d isr=%u bios=%u,%u\n",event,unsigned(held),vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots(),unsigned(vm->pic.isr),vm->memory.readWord(0x41a),vm->memory.readWord(0x41c));
+}
 static uint16_t monkeyClickBiosHead=0,monkeyClickBiosTail=0;
 static const char *monkeyClickSource="none";
 static void monkeyClickCancel();
@@ -358,6 +362,12 @@ static void monkeyClickCancel(){
 static bool monkeyClickRequest(bool mouse,const char *source){
  if(!vm||!monkeyRamTouch||activeGame!=1||launcher||bootPhase||loadingGame||launchPending||benchUntil||pendingPanel!=255)return false;
  if(monkeyClickPending||monkeyClickDown){Serial.println("DOS ACTION busy");return false;}
+ // A panel ENTER acts at the current guest cursor. Do not wait behind a
+ // motion-only touch that is no longer on screen. Confirmed double taps
+ // already arrive here only after their position has been acknowledged.
+ if(!mouse&&!strcmp(source,"panel")){
+   directQueued=directClick=false;monkeyRamFlight=monkeyRamClick=false;
+ }
  monkeyClickPending=true;monkeyClickMouse=mouse;monkeyClickSource=source;monkeyClickWait=millis();
  Serial.printf("DOS ACTION request source=%s method=%s\n",source,mouse?"mouse":"enter");
  return true;
@@ -372,10 +382,11 @@ static void monkeyClickTick(){
    if(monkeyClickMouse)dos_mouse(0,0,false);
    else{vm->input.handleKeyUp(28);vm->input.tick();}
    Serial.printf("DOS ACTION up source=%s method=%s ms=%u guest_reads=%u bios=%u,%u->%u,%u queue=%d\n",monkeyClickSource,monkeyClickMouse?"mouse":"enter",now-monkeyClickAt,reads,monkeyClickBiosHead,monkeyClickBiosTail,vm->memory.readWord(0x41a),vm->memory.readWord(0x41c),vm->input.freeSlots());
+   if(!reads&&!monkeyClickMouse)monkeyInputReport("action_no_guest_read");
    monkeyClickDown=false;return;
  }
- if(held||directQueued||monkeyRamFlight||vm->input.freeSlots()<8){
-   if(now-monkeyClickWait>=700){monkeyClickPending=false;Serial.println("DOS ACTION timeout waiting for idle input/position");}
+ if(held||monkeyRamFlight||vm->input.freeSlots()<8){
+   if(now-monkeyClickWait>=700){monkeyClickPending=false;Serial.println("DOS ACTION timeout waiting for idle input/position");monkeyInputReport("action_wait_timeout");}
    return;
  }
  monkeyClickPending=false;monkeyClickDown=true;monkeyClickAt=now;monkeyClickRead=vm->input.prismaReadCount;
@@ -676,7 +687,7 @@ static void monkeyRamReport(const char *event){
  monkeyRamX,monkeyRamY,monkeyRamWrites,monkeyRamRejects,monkeyRamRecoveries,unsigned(monkeyRamFlight),unsigned(monkeyRamBlocked));
 }
 static void monkeyRamTick(){
- if(!monkeyRamTouch||monkeyClickDown)return;
+ if(!monkeyRamTouch||monkeyClickDown||monkeyClickPending)return;
  if(!vm||activeGame!=1||launcher){monkeyRamTouch=false;monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
  if(bootPhase||loadingGame||launchPending){monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
  if(held||benchUntil||pendingPanel!=255){monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
@@ -687,10 +698,16 @@ static void monkeyRamTick(){
        if(vm->input.freeSlots()<8){
          if(millis()-monkeyRamStarted<300)return;
          ++monkeyRamRejects;
-       }else{monkeyClickRequest(false,"double");}
+       }else{
+         // A completed double tap owns the cursor until ENTER is sent.
+         // Discard any later motion-only sample, not a queued second click.
+         if(directQueued&&!directClick)directQueued=false;
+         monkeyClickRequest(false,"double");
+       }
      }
      ++directMoves;monkeyPositionMaxUs=max(monkeyPositionMaxUs,uint32_t(millis()-monkeyRamStarted)*1000u);
      monkeyRamFlight=monkeyRamClick=false;
+     if(monkeyClickPending)return;
    }else if(millis()-monkeyRamStarted>=1000){
      ++monkeyRamRejects;++directTimeouts;monkeyRamFlight=monkeyRamClick=false;
      // Never send a delayed action after an unconfirmed position. Keep the
@@ -1030,6 +1047,13 @@ static void cursorAutoTick(){
 void dos_key_scan(const char *arg){keyScanCommand(arg);}
 void dos_cursor_scan(const char *arg){
  if(!strcmp(arg,"stop")){cursorRamFree();cancelDirect();Serial.println("DOS RAM scan released; default RAM touch retained");return;}
+ if(!strcmp(arg,"key status")){monkeyInputReport("manual");return;}
+ if(!strcmp(arg,"click bios")){
+   if(vm&&activeGame==1&&!launcher&&!bootPhase&&!loadingGame&&!launchPending&&!benchUntil&&!held&&!monkeyClickPending&&!monkeyClickDown){
+     if(enqueueText(13,28)){Serial.println("DOS ACTION diagnostic BIOS ENTER queued");monkeyInputReport("bios_enter");}
+   }else Serial.println("DOS ACTION BIOS ENTER unavailable");
+   return;
+ }
  if(!strcmp(arg,"click")||!strcmp(arg,"click mouse")){
    if(!monkeyClickRequest(!strcmp(arg,"click mouse"),"serial"))Serial.println("DOS ACTION rejected: enable RAM touch in Monkey Island and wait for idle");
    return;
@@ -1169,7 +1193,7 @@ enum StartupState : uint8_t { START_WAIT,START_SEARCH,START_READY,START_TYPE };
 static StartupState startupState=START_WAIT;
 static uint16_t startupNumber=0,startupSample=0;
 static uint8_t startupDigit=0,startupKey=0;
-static uint32_t startupAt=0,startupNext=0,startupStable=0,startupReads=0;
+static uint32_t startupAt=0,startupNext=0,startupStable=0,startupReads=0,startupDrainAt=0;
 static char startupLabel[5]="----";
 static void startupRelease(){
  if(vm&&startupKey){vm->input.handleKeyUp(startupKey);vm->input.tick();}
@@ -1177,7 +1201,7 @@ static void startupRelease(){
 }
 static void startupReset(bool active){
  startupRelease();startupActive=active;startupState=START_WAIT;
- startupNumber=startupSample=0;startupDigit=0;startupAt=startupNext=startupStable=0;
+ startupNumber=startupSample=0;startupDigit=0;startupAt=startupNext=startupStable=startupDrainAt=0;
  memcpy(startupLabel,"----",5);
  startupBaseline=active&&vm?vm->memory.readWord(startupNumberAddress):0;
 }
@@ -1211,13 +1235,15 @@ static void startupType(){
    startupState=START_WAIT;memcpy(startupLabel,"----",5);panelRepaint=true;Serial.println("DOS STARTUP candidate changed; search again");return;
  }
  if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8)return;
- cancelDirect();startupDigit=0;startupKey=0;startupState=START_TYPE;
+ cancelDirect();startupDigit=0;startupKey=0;startupDrainAt=0;startupState=START_TYPE;
  startupAt=startupNext=millis();panelRepaint=true;
  Serial.println("DOS STARTUP typing four digits");
 }
 static void startupFinish(){
  startupRelease();startupActive=false;startupState=START_WAIT;
- keyScanFree();cancelDirect();setPanel(0);
+ keyScanFree();cursorRamFree();cancelDirect();dos_key(0);
+ monkeyInputReport("startup_handoff");
+ setPanel(0);
  Serial.println("DOS STARTUP controls closed; game acceptance not independently verified");
 }
 static void startupTick(){
@@ -1242,7 +1268,17 @@ static void startupTick(){
    ++startupDigit;startupNext=startupAt+1000;return;
  }
  if(int32_t(now-startupNext)<0)return;
- if(startupDigit==4){startupFinish();return;}
+ if(startupDigit==4){
+   if(!startupDrainAt){startupDrainAt=now;monkeyInputReport("startup_drain_begin");}
+   const bool drained=vm->input.freeSlots()==256&&vm->input.prismaSentCount==vm->input.prismaReadCount&&!(vm->pic.isr&2);
+   if(drained){startupFinish();return;}
+   if(now-startupDrainAt>=2500){
+     // Do not silently purge keys or PIC state. Preserve manual recovery.
+     monkeyInputReport("startup_drain_timeout");
+     startupFinish();
+   }
+   return;
+ }
  if(held||monkeyClickPending||monkeyClickDown||vm->input.freeSlots()<8){
    if(now-startupNext>2000){startupState=START_READY;panelRepaint=true;Serial.println("DOS STARTUP input busy; use numeric pad");}
    return;
@@ -1276,10 +1312,12 @@ static void numericCell(const PanelKey &k,int top){
  dosLcd->setTextColor(0xffff);dosLcd->setTextSize(4);
  dosLcd->setCursor(x+(w-24)/2,y+(h-32)/2);dosLcd->print(k.key.label);
 }
-static void drawPanel(){
+static void drawPanel(bool full){
  const uint8_t m=__atomic_load_n(&panelMode,__ATOMIC_RELAXED);const int top=panelTop();
  if(m==3)return;
- dosLcd->fillRect(0,top,480,480-top,0x0842);
+ // In startup, a state change only affects the two central buttons
+ // (or the enable state of the three fixed controls). Keep background intact.
+ if(m!=8||full)dosLcd->fillRect(0,top,480,480-top,0x0842);
  if(m==1||m==4){unsigned n=0;for(const auto &k:keyboard){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%10==0)vTaskDelay(1);}}
  else if(m==2){
    unsigned n=0;
@@ -1288,11 +1326,17 @@ static void drawPanel(){
  }
  else if(activeGame==1&&m==8){
    const bool typing=startupState==START_TYPE;
-   cell({"ENTER",uint8_t(typing?0:28)},16,top,96,96);
-   cell({startupState==START_SEARCH?"BUSCANDO":"CLAVE",uint8_t(typing?0:245)},128,top,96,96);
-   cell({startupLabel,uint8_t(startupState==START_READY?255:0)},240,top,96,96);
-   cell({"ESC",uint8_t(typing?0:1)},384,top,96,48);
-   cell({"MENU",uint8_t(typing?0:251)},384,top+48,96,48);
+   static bool lastTyping=false;
+   static StartupState lastState=START_WAIT;
+   static char lastLabel[5]={};
+   if(full||typing!=lastTyping){
+     cell({"ENTER",uint8_t(typing?0:28)},16,top,96,96);
+     cell({"ESC",uint8_t(typing?0:1)},384,top,96,48);
+     cell({"MENU",uint8_t(typing?0:251)},384,top+48,96,48);
+   }
+   if(full||startupState!=lastState)cell({startupState==START_SEARCH?"BUSCANDO":"CLAVE",uint8_t(typing?0:245)},128,top,96,96);
+   if(full||startupState!=lastState||strcmp(startupLabel,lastLabel))cell({startupLabel,uint8_t(startupState==START_READY?255:0)},240,top,96,96);
+   lastTyping=typing;lastState=startupState;memcpy(lastLabel,startupLabel,5);
  }
  else if(activeGame==1&&m==0){unsigned i=0;for(const auto &k:monkeyQuick){quickCell(k,monkeyQuickNames[i++],top);}}
  else if(activeGame==1&&m==5){for(int c=0;c<5;c++){const OverlayKey k=startupActive&&c==0?OverlayKey{"JUGAR",238}:monkeyMenu[c];cell(k,c*96,top,96,48);}}
@@ -1322,7 +1366,7 @@ static void servicePanel(){
    cancelDirect();dos_key(0);dos_mouse(0,0,false);
    traceMain(21);if(panelTop()!=previousTop){dosLcd->fillScreen(0);vTaskDelay(1);}
  }
- drawPanel();traceMain(22);dosLcd->flush(true);
+ drawPanel(change);traceMain(22);dosLcd->flush(true);
  if(change&&panelTop()!=previousTop){host.video.invalidate();vm->video.updatedscreen=true;vm->video.prismaDrawDue=true;}
  if(async)host.video.release();
  if(change)diag_logf(false,"DOS PANEL end mode=%u us=%u stack=%u\n",mode,micros()-started,(unsigned)uxTaskGetStackHighWaterMark(nullptr));
@@ -1472,7 +1516,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059S4 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059S5 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
