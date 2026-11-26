@@ -589,7 +589,7 @@ static void keyScanReport(){
    for(unsigned k=0;k<2;++k){
      if(keyScanBefore&&k)continue;
      char out[180];unsigned n=snprintf(out,sizeof(out),"DOS KEYSCAN %s %s count=%u addr=",keyScanNames[m],k?"new":(keyScanBefore?"before":"retained"),keyScanCount[m][k]);
-     for(unsigned j=0;j<min(keyScanCount[m][k],8u)&&n+8<sizeof(out);++j)n+=snprintf(out+n,sizeof(out)-n,"%s%05lx",j?",":"",(unsigned long)keyScanAddr[m][k][j]);
+     for(unsigned j=0;j<min<uint32_t>(keyScanCount[m][k],8u)&&n+8<sizeof(out);++j)n+=snprintf(out+n,sizeof(out)-n,"%s%05lx",j?",":"",(unsigned long)keyScanAddr[m][k][j]);
      Serial.println(out);
    }
  }
@@ -614,7 +614,7 @@ static void keyScanTick(){
    for(unsigned m=0;m<3;++m){
      if(!keyScanMatch(p+i,m))continue;
      const unsigned k=(!keyScanBefore&&!keyScanMatch(keyScanBase+i,m))?1:0;
-     unsigned &count=keyScanCount[m][k];
+     uint32_t &count=keyScanCount[m][k];
      if(count<8)keyScanAddr[m][k][count]=CURSOR_RAM_BASE+i;
      ++count;
    }
