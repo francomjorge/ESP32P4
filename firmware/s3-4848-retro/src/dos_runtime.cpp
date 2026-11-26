@@ -506,6 +506,29 @@ constexpr uint32_t CURSOR_RAM_N=CURSOR_RAM_END-CURSOR_RAM_BASE;
 constexpr uint32_t CURSOR_MASK_N=(CURSOR_RAM_N+7)/8;
 static uint8_t *cursorRamPrev=nullptr,*cursorRamNow=nullptr,*cursorMasks=nullptr;
 static unsigned cursorRounds=0;
+// These are physical guest addresses observed in the 059R3 experiment.
+// They are hypotheses for this specific installed game, not verified offsets.
+static bool cursorWatch=false;
+static uint8_t cursorWatchKey=0;
+static uint32_t cursorWatchNext=0;
+static constexpr uint32_t cursorWatchAddresses[]={0x2e5f0,0x2e5f2,0x30df4,0x33fb4,0x2e5fb,0x2ed74};
+static unsigned cursorWatchWord(uint32_t a){
+ return unsigned(vm->memory.readByte(a))|(unsigned(vm->memory.readByte(a+1))<<8);
+}
+static void cursorWatchLog(const char *event,uint8_t key){
+ unsigned v[6];
+ for(unsigned i=0;i<6;++i)v[i]=cursorWatchWord(cursorWatchAddresses[i]);
+ Serial.printf("DOS RAM WATCH %s key=%u XY=%u,%u Xalt=%u,%u Yalt=%u,%u\n",event,(unsigned)key,v[0],v[1],v[2],v[3],v[4],v[5]);
+}
+static void cursorWatchTick(){
+ if(!cursorWatch)return;
+ if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){cursorWatch=false;cursorWatchKey=0;return;}
+ const uint8_t k=held;
+ const bool arrow=k==77||k==75||k==80||k==72;
+ if(cursorWatchKey&&(!arrow||k!=cursorWatchKey)){cursorWatchLog("release",cursorWatchKey);cursorWatchKey=0;}
+ if(arrow&&k!=cursorWatchKey){cursorWatchKey=k;cursorWatchLog("hold",k);cursorWatchNext=millis()+150;}
+ else if(arrow&&int32_t(millis()-cursorWatchNext)>=0){cursorWatchLog("live",k);cursorWatchNext=millis()+150;}
+}
 static bool cursorAuto=false,cursorAutoFiltered=false;
 static uint8_t cursorAutoArrow=0;
 static uint32_t cursorAutoAt=0,cursorAutoNext=0;
@@ -520,7 +543,7 @@ static const char *cursorArrowName(uint8_t k){return k==77?"right":k==75?"left":
 static bool cursorIsArrow(uint8_t k){return k==77||k==75||k==80||k==72;}
 static void cursorRamFree(){
  free(cursorRamPrev);free(cursorRamNow);free(cursorMasks);
- cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;cursorFilterBusy=false;cursorFilterIndex=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
+ cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;cursorWatch=false;cursorWatchKey=0;cursorFilterBusy=false;cursorFilterIndex=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
 }
 static bool cursorRamAlloc(){
  cursorRamPrev=(uint8_t*)ps_malloc(CURSOR_RAM_N);
@@ -631,6 +654,7 @@ static void cursorAutoFilterSlice(){
  }
 }
 static void cursorAutoTick(){
+ cursorWatchTick();
  if(!cursorAuto||!cursorMasks)return;
  if(activeGame!=1||launcher||bootPhase||loadingGame||benchUntil){cursorAutoArrow=0;return;}
  if(cursorFilterBusy)cursorAutoFilterSlice();
@@ -655,6 +679,12 @@ void dos_cursor_scan(const char *arg){
  if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){
    Serial.println("DOS RAM unavailable: enter Monkey Island and wait for game");return;
  }
+ if(!strcmp(arg,"watch")){
+   cursorRamFree();cursorWatch=true;cursorWatchKey=0;
+   Serial.println("DOS RAM WATCH addresses XY=2e5f0,2e5f2 Xalt=30df4,33fb4 Yalt=2e5fb,2ed74");
+   cursorWatchLog("baseline",0);return;
+ }
+ if(cursorWatch&&!strcmp(arg,"list")){cursorWatchLog("manual",0);return;}
  if(!strcmp(arg,"base")||!strcmp(arg,"auto")){
    const bool automatic=!strcmp(arg,"auto");
    cursorRamFree();
@@ -891,7 +921,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R3 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R4 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
