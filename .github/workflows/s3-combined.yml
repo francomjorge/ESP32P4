@@ -1,7 +1,7 @@
-name: S3 Retro - build 067 combined
+name: S3 Retro - build 068 combined
 on:
   push:
-    branches: [build-067-fine-dirty-trace]
+    branches: [build-068-vga-cpu]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -362,6 +362,56 @@ jobs:
           p.write_text(src)
           p=path("Video.h","prismaCapture()")
           edit(p,[("    bool prismaCapture();","    bool prismaCapture();\n    uint32_t prismaCaptureBytes();")])
+          # 068: speed up common CPU-side VGA operations, preserve dirty
+          # marking and all uncommon latch/logic/write modes.
+          p=path("Video.cpp","prismaCapture()")
+          src=p.read_text()
+          old="static uint32_t prismaBytes=0;"
+          assert src.count(old)==1
+          src=src.replace(old,old+"""
+          static uint32_t prismaVgaReads=0,prismaVgaWrites=0,prismaVgaFast=0;
+          void Video::prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f){
+            r=prismaVgaReads;w=prismaVgaWrites;f=prismaVgaFast;
+          }
+          """,1)
+          # Counters are defined above these methods by the previous snapshot patch.
+          # Forward declarations are unnecessary only if the snapshot globals
+          # precede the methods, so relocate the counter definitions if needed.
+          marker="static uint32_t prismaVgaReads=0,prismaVgaWrites=0,prismaVgaFast=0;"
+          write="void Video::vga_writememory(void *dummy, uint32_t addr, uint8_t value)\n{"
+          read="uint8_t Video::vga_readmemory(void *dummy, uint32_t addr)\n{"
+          assert src.count(write)==1 and src.count(read)==1
+          if src.index(marker)>min(src.index(write),src.index(read)):
+              src=src.replace(marker,"",1)
+              src=src.replace("using namespace Faux86;","using namespace Faux86;\n"+marker,1)
+          src=src.replace(write,write+"\n  ++prismaVgaWrites;",1)
+          src=src.replace(read,read+"\n  ++prismaVgaReads;",1)
+          # Existing latch loads already contain the requested byte.
+          old="return vga_RAM[vga_readmap][addr];"
+          assert src.count(old)==1
+          src=src.replace(old,"return vga_latch[vga_readmap];",1)
+          # The original chain-4/odd-even branches stay unchanged. For planar
+          # write mode 0, all-one bit mask, no logic op and no set/reset,
+          # the original per-plane result is exactly the rotated host byte.
+          start=src.index(write)
+          end=src.index("uint8_t Video::readVGA",start)
+          part=src[start:end]
+          old="  switch (vga_wmode)"
+          assert part.count(old)==1
+          part=part.replace(old,"""  if(vga_wmode==0 && vga_logicop==0 && vga_gfxd[0x08]==255 && (vga_gfxd[0x01]&15)==0){
+            ++prismaVgaFast;
+            const uint8_t v=vga_dorotate(value);
+            for(unsigned p=0;p<4;++p)if(vga_enableplane&(1u<<p)){
+              uint8_t *dst=vga_RAM[p]+addr;
+              if(*dst!=v){*dst=v;prismaMark(p,addr);}
+            }
+            return;
+          }
+          """+old,1)
+          src=src[:start]+part+src[end:]
+          p.write_text(src)
+          p=path("Video.h","prismaCaptureBytes()")
+          edit(p,[("    uint32_t prismaCaptureBytes();","    uint32_t prismaCaptureBytes();\n    void prismaVgaCounts(uint32_t &r,uint32_t &w,uint32_t &f);")])
           # 042: reuse previous RGB pixels for scanlines whose source VGA
           # blocks have not changed. Full redraw on mode/register/palette
           # changes and on unsupported layouts. The worker owns the RGB cache.
@@ -631,7 +681,7 @@ jobs:
               assert src[start:].count(old)==1
               src=src[:start]+src[start:].replace(old,"prismaScaleDirtyValid=true;\n              "+old+"\n              prismaScaleDirtyValid=false;",1)
           p.write_text(src)
-          # 067: direct native VGA 256-color snapshot to the existing LCD cache.
+          # 068: direct native VGA 256-color snapshot to the existing LCD cache.
           p=path("Video.cpp","prismaRenderSnapshot()")
           src=p.read_text()
           src="extern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);\n"+src if src.startswith("#include <stdint.h>")==False else src.replace("#include <stdint.h>","#include <stdint.h>\nextern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);",1)
@@ -1042,7 +1092,7 @@ jobs:
               used.update(pixels)
           assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","OCULTAR","^","<","v",">"}
           assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
-          print("067 PAD geometry verified, no overlapping touch zones")
+          print("068 PAD geometry verified, no overlapping touch zones")
           PY
       - name: Test touch double-tap predicate
         run: |
@@ -1083,7 +1133,7 @@ jobs:
                       native=[palette[planes[x%4][(start+sy*80+x//4)&65535]] for x in range(320)]
                       expanded=[p for p in native for _ in range(2)]
                       assert [expanded[x*640//dw] for x in range(dw)]==[native[(x*640//dw)//2] for x in range(dw)]
-          print("067 fused VGA coordinate and palette equivalence passed")
+          print("068 fused VGA coordinate and palette equivalence passed")
           PY
       - name: Test RAM cursor filter
         run: |
@@ -1112,13 +1162,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-067-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-067-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-067.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-068-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-068-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-068.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-067-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-068-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1127,6 +1177,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-067
+          name: PRISMA-RETRO-S3-068
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
