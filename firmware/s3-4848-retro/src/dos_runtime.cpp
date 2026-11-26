@@ -509,6 +509,9 @@ static unsigned cursorRounds=0;
 static bool cursorAuto=false,cursorAutoFiltered=false;
 static uint8_t cursorAutoArrow=0;
 static uint32_t cursorAutoAt=0,cursorAutoNext=0;
+static bool cursorFilterBusy=false;
+static uint32_t cursorFilterIndex=0,cursorFilterCounts[4]={},cursorCaptureUs=0;
+static uint8_t cursorFilterArrow=0;
 static constexpr unsigned CURSOR_LIVE_N=3;
 static uint32_t cursorLiveAddr[4][CURSOR_LIVE_N];
 static unsigned cursorLiveCount[4]={};
@@ -517,7 +520,7 @@ static const char *cursorArrowName(uint8_t k){return k==77?"right":k==75?"left":
 static bool cursorIsArrow(uint8_t k){return k==77||k==75||k==80||k==72;}
 static void cursorRamFree(){
  free(cursorRamPrev);free(cursorRamNow);free(cursorMasks);
- cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
+ cursorRamPrev=cursorRamNow=cursorMasks=nullptr;cursorRounds=0;cursorAuto=false;cursorAutoArrow=0;cursorFilterBusy=false;cursorFilterIndex=0;memset(cursorLiveCount,0,sizeof(cursorLiveCount));
 }
 static bool cursorRamAlloc(){
  cursorRamPrev=(uint8_t*)ps_malloc(CURSOR_RAM_N);
@@ -527,10 +530,11 @@ static bool cursorRamAlloc(){
  return true;
 }
 static void cursorRamCapture(uint8_t *dst){
- for(uint32_t i=0;i<CURSOR_RAM_N;++i){
-   dst[i]=vm->memory.readByte(CURSOR_RAM_BASE+i);
-   if((i&4095)==4095)vTaskDelay(1);
- }
+ // Guest execution is on this same task. Conventional RAM is directly
+ // addressable (same backing memory used by the existing fast CPU reads).
+ const uint32_t t=micros();
+ memcpy(dst,vm->memory.RAM+CURSOR_RAM_BASE,CURSOR_RAM_N);
+ cursorCaptureUs=micros()-t;
 }
 // mode 0=x16,1=y16,2=x8,3=y8. Keep unaligned words as candidates.
 static unsigned cursorValue(const uint8_t *p,uint32_t i,unsigned mode){
@@ -575,10 +579,11 @@ static void cursorFilter(int dx,int dy,const char *arg){
 }
 static void cursorAutoBegin(uint8_t k){
  if(!cursorAuto||!cursorMasks||!cursorIsArrow(k)||activeGame!=1)return;
- // Take the baseline BEFORE the original physical arrow is sent.
+ // Never delay a physical key while a previous scan is being filtered.
+ if(cursorFilterBusy){Serial.println("DOS RAM HOLD busy: arrow still forwarded; wait for count");return;}
  cursorRamCapture(cursorRamPrev);
- cursorAutoArrow=k;cursorAutoFiltered=false;cursorAutoAt=millis();cursorAutoNext=cursorAutoAt+450;
- Serial.printf("DOS RAM HOLD begin %s rounds=%u\n",cursorArrowName(k),cursorRounds);
+ cursorAutoArrow=k;cursorAutoFiltered=false;cursorAutoAt=millis();cursorAutoNext=cursorAutoAt+350;
+ Serial.printf("DOS RAM HOLD begin %s rounds=%u snapshot_us=%u\n",cursorArrowName(k),cursorRounds,cursorCaptureUs);
 }
 static void cursorAutoLive(){
  // Only preview the bounded list retained from the last differential scan.
@@ -591,20 +596,58 @@ static void cursorAutoLive(){
    }
  }
 }
+static void cursorAutoStartFilter(uint8_t k){
+ cursorRamCapture(cursorRamNow);
+ cursorFilterArrow=k;cursorFilterIndex=0;cursorFilterBusy=true;
+ memset(cursorFilterCounts,0,sizeof(cursorFilterCounts));
+ memset(cursorLiveCount,0,sizeof(cursorLiveCount));
+ Serial.printf("DOS RAM HOLD snapshot %s duration_ms=%u snapshot_us=%u\n",cursorArrowName(k),millis()-cursorAutoAt,cursorCaptureUs);
+}
+static void cursorAutoFilterSlice(){
+ // Bounded CPU work per loop. Snapshot buffers are immutable until complete.
+ const uint32_t end=min(CURSOR_RAM_N-1,cursorFilterIndex+2048u);
+ const uint8_t k=cursorFilterArrow;
+ const int dx=k==77?1:k==75?-1:0,dy=k==80?1:k==72?-1:0;
+ for(unsigned m=0;m<4;++m){
+   uint8_t *mask=cursorMasks+m*CURSOR_MASK_N;
+   const unsigned limit=m<2?1023:255;
+   const int direction=(m&1)?dy:dx;
+   for(uint32_t i=cursorFilterIndex;i<end;++i){
+     const uint8_t bit=uint8_t(1u<<(i&7));
+     if(!(mask[i>>3]&bit))continue;
+     if(!cursorMatch(cursorValue(cursorRamPrev,i,m),cursorValue(cursorRamNow,i,m),limit,direction)){mask[i>>3]&=uint8_t(~bit);continue;}
+     ++cursorFilterCounts[m];
+     if(cursorLiveCount[m]<CURSOR_LIVE_N)cursorLiveAddr[m][cursorLiveCount[m]++]=CURSOR_RAM_BASE+i;
+   }
+ }
+ cursorFilterIndex=end;
+ if(end!=CURSOR_RAM_N-1)return;
+ uint8_t *tmp=cursorRamPrev;cursorRamPrev=cursorRamNow;cursorRamNow=tmp;
+ ++cursorRounds;cursorFilterBusy=false;
+ Serial.printf("DOS RAM count X16=%u Y16=%u X8=%u Y8=%u rounds=%u dir=%s\n",cursorFilterCounts[0],cursorFilterCounts[1],cursorFilterCounts[2],cursorFilterCounts[3],cursorRounds,cursorArrowName(k));
+ for(unsigned m=0;m<4;++m)for(unsigned n=0;n<cursorLiveCount[m];++n){
+   uint32_t addr=cursorLiveAddr[m][n];
+   Serial.printf("DOS RAM %s addr=%05lx value=%u\n",cursorAxis(m),(unsigned long)addr,cursorValue(cursorRamPrev,addr-CURSOR_RAM_BASE,m));
+ }
+}
 static void cursorAutoTick(){
- if(!cursorAuto||!cursorMasks||!cursorAutoArrow)return;
- if(activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||held!=cursorAutoArrow){
-   Serial.printf("DOS RAM HOLD end %s sampled=%u\n",cursorArrowName(cursorAutoArrow),(unsigned)cursorAutoFiltered);
+ if(!cursorAuto||!cursorMasks)return;
+ if(activeGame!=1||launcher||bootPhase||loadingGame||benchUntil){cursorAutoArrow=0;return;}
+ if(cursorFilterBusy)cursorAutoFilterSlice();
+ if(!cursorAutoArrow)return;
+ const uint32_t now=millis();
+ const bool released=held!=cursorAutoArrow;
+ if(!cursorAutoFiltered&&!cursorFilterBusy&&(released||int32_t(now-cursorAutoNext)>=0)){
+   // Ignore very short gestures, rather than filtering on a stationary cursor.
+   if(now-cursorAutoAt>=150){cursorAutoStartFilter(cursorAutoArrow);cursorAutoFiltered=true;}
+ }
+ if(released){
+   Serial.printf("DOS RAM HOLD end %s sampled=%u duration_ms=%u\n",cursorArrowName(cursorAutoArrow),(unsigned)cursorAutoFiltered,now-cursorAutoAt);
    cursorAutoArrow=0;return;
  }
- uint32_t now=millis();
- if(int32_t(now-cursorAutoNext)<0)return;
- if(!cursorAutoFiltered){
-   const uint8_t k=cursorAutoArrow;
-   cursorFilter(k==77?1:k==75?-1:0,k==80?1:k==72?-1:0,cursorArrowName(k));
-   cursorAutoFiltered=true;
- }else cursorAutoLive();
- cursorAutoNext=millis()+500;
+ if(cursorAutoFiltered&&!cursorFilterBusy&&int32_t(now-cursorAutoNext)>=0){
+   cursorAutoLive();cursorAutoNext=now+500;
+ }
 }
 }
 void dos_cursor_scan(const char *arg){
@@ -616,15 +659,15 @@ void dos_cursor_scan(const char *arg){
    const bool automatic=!strcmp(arg,"auto");
    cursorRamFree();
    if(!cursorRamAlloc()){Serial.println("DOS RAM insufficient PSRAM");return;}
-   cursorRamCapture(cursorRamPrev);
+   if(!automatic)cursorRamCapture(cursorRamPrev);
    memset(cursorMasks,255,CURSOR_MASK_N*4);
    cursorRounds=0;cursorAuto=automatic;
-   if(automatic)Serial.println("DOS RAM AUTO ready: hold each PAD arrow 1-2 seconds, release before edge; :cursor list / stop");
+   if(automatic)Serial.println("DOS RAM AUTO ready: hold PAD arrow 1-2 seconds, release before edge, wait for DOS RAM count; :cursor list / stop");
    else Serial.println("DOS RAM baseline ready; move cursor with PAD, then :cursor right/left/up/down");
    return;
  }
  if(!cursorMasks){Serial.println("DOS RAM use :cursor base first");return;}
- if(!strcmp(arg,"list")){cursorReport();return;}
+ if(!strcmp(arg,"list")){if(cursorFilterBusy){Serial.printf("DOS RAM filtering %u/%u\n",cursorFilterIndex,CURSOR_RAM_N-1);return;}cursorReport();return;}
  if(cursorAuto){Serial.println("DOS RAM AUTO active; use PAD arrows or :cursor stop");return;}
  int dx=0,dy=0;
  if(!strcmp(arg,"right"))dx=1;else if(!strcmp(arg,"left"))dx=-1;
@@ -848,7 +891,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R2 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R3 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
