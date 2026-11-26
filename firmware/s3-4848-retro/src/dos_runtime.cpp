@@ -300,6 +300,8 @@ static int monkeyTapX=0,monkeyTapY=0;
 static bool monkeyRamTouch=false,monkeyRamFlight=false,monkeyRamClick=false;
 static uint16_t monkeyRamX=0,monkeyRamY=0;
 static uint32_t monkeyRamStarted=0,monkeyRamWrites=0,monkeyRamRejects=0;
+static uint32_t monkeyRamRecoveries=0,monkeyRamBlockedAt=0;
+static bool monkeyRamBlocked=false;
 // One independent activation pulse for RAM-touch Monkey Island.
 // Do not reuse held: dos_touch_game releases that key on finger-up.
 static bool monkeyClickPending=false,monkeyClickDown=false,monkeyClickMouse=false;
@@ -577,6 +579,12 @@ static bool monkeyRamCoherent(){
  const unsigned x=cursorWatchWord(cursorLogicalX),y=cursorWatchWord(cursorLogicalY);
  return x<=319&&y<=199&&int16_t(cursorWatchWord(cursorRenderX))==int(x)-8&&cursorWatchWord(cursorRenderY)==y+9;
 }
+static void monkeyRamReport(const char *event){
+ Serial.printf("DOS RAM TOUCH %s enabled=%u coherent=%u logical=%u,%u render=%d,%u target=%u,%u writes=%u rejected=%u recovered=%u flight=%u blocked=%u\n",
+ event,unsigned(monkeyRamTouch),unsigned(monkeyRamCoherent()),vm?cursorWatchWord(cursorLogicalX):0,vm?cursorWatchWord(cursorLogicalY):0,
+ vm?int(int16_t(cursorWatchWord(cursorRenderX))):0,vm?cursorWatchWord(cursorRenderY):0,
+ monkeyRamX,monkeyRamY,monkeyRamWrites,monkeyRamRejects,monkeyRamRecoveries,unsigned(monkeyRamFlight),unsigned(monkeyRamBlocked));
+}
 static void monkeyRamTick(){
  if(!monkeyRamTouch||monkeyClickDown)return;
  if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||launchPending){monkeyRamTouch=false;monkeyRamFlight=monkeyRamClick=false;directQueued=directClick=false;return;}
@@ -592,18 +600,28 @@ static void monkeyRamTick(){
      }
      ++directMoves;monkeyPositionMaxUs=max(monkeyPositionMaxUs,uint32_t(millis()-monkeyRamStarted)*1000u);
      monkeyRamFlight=monkeyRamClick=false;
-   }else if(millis()-monkeyRamStarted>=300){
+   }else if(millis()-monkeyRamStarted>=1000){
      ++monkeyRamRejects;++directTimeouts;monkeyRamFlight=monkeyRamClick=false;
-     Serial.println("DOS RAM TOUCH readback mismatch; positioning disabled; re-enable after checking coordinates");
-     monkeyRamTouch=false;directQueued=directClick=false;
+     // Never send a delayed action after an unconfirmed position. Keep the
+     // feature armed so the next coherent touch can recover automatically.
+     directQueued=directClick=false;
+     monkeyRamBlocked=true;monkeyRamBlockedAt=millis();
+     monkeyRamReport("readback_timeout");
      return;
    }else return;
  }
- if(!directQueued)return;
  if(!monkeyRamCoherent()){
-   if(++monkeyRamRejects<=3)Serial.println("DOS RAM TOUCH skipped: cursor state not coherent");
-   directQueued=directClick=false;return;
+   if(directQueued){
+     ++monkeyRamRejects;directQueued=directClick=false;
+     if(!monkeyRamBlocked){monkeyRamBlocked=true;monkeyRamBlockedAt=millis();monkeyRamReport("waiting_coherence");}
+   }
+   return;
  }
+ if(monkeyRamBlocked){
+   monkeyRamBlocked=false;++monkeyRamRecoveries;
+   monkeyRamReport("recovered");
+ }
+ if(!directQueued)return;
  const uint16_t x=(uint32_t(directX)*319+32767)/65535;
  const uint16_t y=(uint32_t(directY)*199+32767)/65535;
  monkeyRamX=x;monkeyRamY=y;monkeyRamClick=directClick;directQueued=directClick=false;
@@ -920,11 +938,11 @@ void dos_cursor_scan(const char *arg){
    return;
  }
  if(!strcmp(arg,"touch off")){monkeyRamTouch=false;cancelDirect();Serial.println("DOS RAM TOUCH off");return;}
- if(!strcmp(arg,"touch status")){Serial.printf("DOS RAM TOUCH enabled=%u coherent=%u XY=%u,%u writes=%u rejected=%u\n",unsigned(monkeyRamTouch),unsigned(monkeyRamCoherent()),vm?cursorWatchWord(cursorLogicalX):0,vm?cursorWatchWord(cursorLogicalY):0,monkeyRamWrites,monkeyRamRejects);return;}
+ if(!strcmp(arg,"touch status")){monkeyRamReport("status");return;}
  if(!strcmp(arg,"touch on")){
    if(!monkeyRamCoherent()||held||pendingPanel!=255||vm->cpu.prismaMouseInCall){Serial.println("DOS RAM TOUCH rejected: wait for stationary Monkey Island cursor and matching X/Y");return;}
    cursorRamFree();cancelDirect();dos_mouse(0,0,false);
-   monkeyRamWrites=monkeyRamRejects=0;monkeyRamTouch=true;
+   monkeyRamWrites=monkeyRamRejects=monkeyRamRecoveries=0;monkeyRamBlocked=false;monkeyRamTouch=true;
    Serial.printf("DOS RAM TOUCH on XY=%u,%u\n",cursorWatchWord(cursorLogicalX),cursorWatchWord(cursorLogicalY));return;
  }
  if(!vm||activeGame!=1||launcher||bootPhase||loadingGame||benchUntil||launchPending){
@@ -1199,7 +1217,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059R8 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059R8B DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
