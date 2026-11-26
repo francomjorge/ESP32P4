@@ -198,9 +198,9 @@ public:
       force=true;oldW=w;oldH=h;oldTop=top;
       for(int x=0;x<dw;x++)xmap[x]=x*w/dw;
       for(int y=0;y<dh;y++)ymap[y]=y*h/dh;
-      int edge=0;for(unsigned k=0;k<=10;++k){while(edge<dw&&(xmap[edge]>>1)<k*32)++edge;segmentEdge[k]=edge;}
       Serial.printf("DOS VIDEO %dx%d -> %dx%d fused\n",w,h,dw,dh);
     }
+    if(force){int edge=0;for(unsigned k=0;k<=10;++k){while(edge<dw&&(xmap[edge]>>1)<k*32)++edge;segmentEdge[k]=edge;}}
     traceWorker(2);
     dirtyFirst=dh;dirtyLast=-1;memset(changedRows,0,dh);
     int prevY=-1;unsigned processed=0,reused=0,decoded=0,written=0;
