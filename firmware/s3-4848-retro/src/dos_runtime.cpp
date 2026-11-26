@@ -1191,14 +1191,19 @@ static void startupReady(uint16_t n){
  Serial.printf("DOS STARTUP number=%u addr=349c4 candidate; confirm on screen\n",unsigned(n));
 }
 static void startupSearch(){
- if(!startupAvailable()||startupState!=START_WAIT)return;
+ if(!startupAvailable()||startupState==START_TYPE)return;
  const uint16_t n=vm->memory.readWord(startupNumberAddress);
  startupAt=millis();startupNext=startupAt+100;startupStable=startupAt;startupSample=n;
- if(!startupValid(n)){
-   if(!monkeyClickRequest(false,"startup-enter"))return;
-   Serial.println("DOS STARTUP search: ENTER sent");
- }else Serial.printf("DOS STARTUP search: candidate=%u\n",unsigned(n));
+ startupNumber=0;memcpy(startupLabel,"----",5);
+ Serial.println("DOS STARTUP search requested; no keyboard input");
  startupState=START_SEARCH;panelRepaint=true;
+}
+static void startupEnter(){
+ if(!startupAvailable()||startupState==START_TYPE)return;
+ if(monkeyClickPending||monkeyClickDown)return;
+ cancelDirect();
+ if(!monkeyClickRequest(false,"startup-enter"))return;
+ startupState=START_WAIT;startupNumber=0;memcpy(startupLabel,"----",5);panelRepaint=true;
 }
 static void startupType(){
  if(!startupAvailable()||startupState!=START_READY)return;
@@ -1282,12 +1287,15 @@ static void drawPanel(){
    else{for(const auto &k:pad){cell(k.key,k.x,top+k.y,k.w,k.h);if(++n%6==0)vTaskDelay(1);}}
  }
  else if(activeGame==1&&m==8){
-   cell({startupState==START_SEARCH?"BUSCANDO":startupState==START_TYPE?"ESCRIBIENDO":"BUSCAR NUMERO",uint8_t(startupState==START_WAIT?245:0)},0,top,240,48);
-   cell({startupLabel,uint8_t(startupState==START_READY?255:0)},240,top,240,48);
-   cell({"NUMERICO",244},0,top+48,160,48);cell({"TEXTO",248},160,top+48,160,48);cell({"JUGAR",238},320,top+48,160,48);
+   const bool typing=startupState==START_TYPE;
+   cell({"ENTER",uint8_t(typing?0:28)},16,top,96,96);
+   cell({startupState==START_SEARCH?"BUSCANDO":"CLAVE",uint8_t(typing?0:245)},128,top,96,96);
+   cell({startupLabel,uint8_t(startupState==START_READY?255:0)},240,top,96,96);
+   cell({"ESC",uint8_t(typing?0:1)},384,top,96,48);
+   cell({"MENU",uint8_t(typing?0:251)},384,top+48,96,48);
  }
  else if(activeGame==1&&m==0){unsigned i=0;for(const auto &k:monkeyQuick){quickCell(k,monkeyQuickNames[i++],top);}}
- else if(activeGame==1&&m==5){for(int c=0;c<5;c++)cell(monkeyMenu[c],c*96,top,96,48);}
+ else if(activeGame==1&&m==5){for(int c=0;c<5;c++){const OverlayKey k=startupActive&&c==0?OverlayKey{"JUGAR",238}:monkeyMenu[c];cell(k,c*96,top,96,48);}}
  else if(activeGame==1&&m==7){for(int c=0;c<5;c++)cell(monkeyGameMenu[c],c*96,top,96,48);}
  else if(m==5){for(int c=0;c<4;c++)cell(gameMenu[c],c*120,top,120,48);}
  else if(m==6){for(int c=0;c<2;c++)cell(exitMenu[c],c*240,top,240,48);}
@@ -1329,9 +1337,16 @@ static uint8_t hitPanel(int x,int y){
    if(activeGame==1){for(const auto &k:monkeyNumeric)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
    else{for(const auto &k:pad)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
  }
- else if(activeGame==1&&m==8){if(y<48)return x<240?(startupState==START_WAIT?245:0):(startupState==START_READY?255:0);return x<160?244:x<320?248:238;}
+ else if(activeGame==1&&m==8){
+   if(startupState==START_TYPE)return 0;
+   if(x>=16&&x<112)return 28;
+   if(x>=128&&x<224)return 245;
+   if(x>=240&&x<336)return startupState==START_READY?255:0;
+   if(x>=384)return y<48?1:251;
+   return 0;
+ }
  else if(activeGame==1&&m==0){for(const auto &k:monkeyQuick)if(x>=k.x&&x<k.x+k.w&&y>=k.y&&y<k.y+k.h)return k.key.scan;}
- else if(activeGame==1&&m==5)return monkeyMenu[x/96].scan;
+ else if(activeGame==1&&m==5)return startupActive&&x<96?238:monkeyMenu[x/96].scan;
  else if(activeGame==1&&m==7)return monkeyGameMenu[x/96].scan;
  else if(m==0){if(x<96&&activeGame==0)return 250;return toolbar[x/96].scan;}
  else if(m==5)return gameMenu[x/120].scan;
@@ -1372,6 +1387,7 @@ void dos_touch_game(unsigned n,int x,int y){
      if(k==240||k==241||k==242){mods^=1u<<(k-240);panelRepaint=true;}
      else if(k==250)setPanel(4);else if(k==243)setPanel(monkey&&startupActive?8:0);else if(k==244)setPanel(2);else if(k==248)setPanel(1);else if(k==249)setPanel(3);
      else if(k==251)setPanel(5);else if(k==252)setPanel(6);else if(k==254&&monkey)setPanel(7);
+     else if(monkey&&startupActive&&k==28&&__atomic_load_n(&panelMode,__ATOMIC_RELAXED)==8)startupEnter();
      else if(monkey&&startupActive&&k==245)startupSearch();
      else if(monkey&&startupActive&&k==255)startupType();
      else if(monkey&&startupActive&&k==238)startupFinish();
@@ -1456,7 +1472,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 059S3 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 059S4 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
