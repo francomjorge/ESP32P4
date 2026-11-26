@@ -31,7 +31,7 @@ static bool matches(LogMode m,const char *s){
 }
 static void exportPhoto(unsigned first,unsigned end){
  live=LOG_OFF;
- if(!photo[first][0]){Serial.println("064 PHOTO no DOS sample yet; wait 3s and retry");return;}
+ if(!photo[first][0]){Serial.println("065 PHOTO no DOS sample yet; wait 3s and retry");return;}
  for(unsigned i=first;i<end;++i)Serial.println(photo[i]);
  Serial.println("PHOTO END (logs off)");
 }
@@ -86,7 +86,7 @@ void diag_begin(){
  if(reason==ESP_RST_POWERON||reason==ESP_RST_BROWNOUT||history.magic!=MAGIC||history.version!=VERSION||history.next>=N||history.count>N){
    memset(&history,0,sizeof(history));history.version=VERSION;history.magic=MAGIC;
  }
- diag_logf(false,"PRISMA BOOT 064 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
+ diag_logf(false,"PRISMA BOOT 065 reset=%d cpu_mhz=%u\n",(int)reason,getCpuFrequencyMhz());
 }
 void diag_logf(bool periodic,const char *fmt,...){
  char buf[256];va_list ap;va_start(ap,fmt);vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);

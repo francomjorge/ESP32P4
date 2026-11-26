@@ -1,7 +1,7 @@
-name: S3 Retro - build 064 combined
+name: S3 Retro - build 065 combined
 on:
   push:
-    branches: [build-064-direct-lcd]
+    branches: [build-065-vga-sram]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -622,7 +622,7 @@ jobs:
               assert src[start:].count(old)==1
               src=src[:start]+src[start:].replace(old,"prismaScaleDirtyValid=true;\n              "+old+"\n              prismaScaleDirtyValid=false;",1)
           p.write_text(src)
-          # 064: direct native VGA 256-color snapshot to the existing LCD cache.
+          # 065: direct native VGA 256-color snapshot to the existing LCD cache.
           p=path("Video.cpp","prismaRenderSnapshot()")
           src=p.read_text()
           src="extern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);\n"+src if src.startswith("#include <stdint.h>")==False else src.replace("#include <stdint.h>","#include <stdint.h>\nextern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);",1)
@@ -1033,7 +1033,7 @@ jobs:
               used.update(pixels)
           assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","OCULTAR","^","<","v",">"}
           assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
-          print("064 PAD geometry verified, no overlapping touch zones")
+          print("065 PAD geometry verified, no overlapping touch zones")
           PY
       - name: Test touch double-tap predicate
         run: |
@@ -1074,7 +1074,7 @@ jobs:
                       native=[palette[planes[x%4][(start+sy*80+x//4)&65535]] for x in range(320)]
                       expanded=[p for p in native for _ in range(2)]
                       assert [expanded[x*640//dw] for x in range(dw)]==[native[(x*640//dw)//2] for x in range(dw)]
-          print("064 fused VGA coordinate and palette equivalence passed")
+          print("065 fused VGA coordinate and palette equivalence passed")
           PY
       - name: Test RAM cursor filter
         run: |
@@ -1103,13 +1103,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-064-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-064-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-064.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-065-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-065-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-065.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-064-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-065-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1118,6 +1118,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-064
+          name: PRISMA-RETRO-S3-065
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
