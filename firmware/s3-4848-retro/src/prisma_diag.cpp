@@ -7,6 +7,7 @@
 #include <string.h>
 void dos_cursor_scan(const char *arg);
 void dos_key_scan(const char *arg);
+bool dos_diag_scene_trace();
 
 // Single producer (Arduino loop/setup); never called from LCD worker.
 namespace {
@@ -31,7 +32,7 @@ static bool matches(LogMode m,const char *s){
 }
 static void exportPhoto(unsigned first,unsigned end){
  live=LOG_OFF;
- if(!photo[first][0]){Serial.println("065 PHOTO no DOS sample yet; wait 3s and retry");return;}
+ if(!photo[first][0]){Serial.println("067 PHOTO no DOS sample yet; wait 3s and retry");return;}
  for(unsigned i=first;i<end;++i)Serial.println(photo[i]);
  Serial.println("PHOTO END (logs off)");
 }
@@ -57,8 +58,9 @@ static void exportLog(bool perf){
 }
 static void runCommand(){
  if(overflow){Serial.println("PRISMA ERR command too long");return;}
+ while(used&&line[used-1]==' ')--used;
  line[used]=0;
- if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :gfx :input :memory :logs all/gfx/input/mem/off :perf :mem :tasks :log :crash :debug on :debug off :bench :mark LABEL :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop :clave ref DDDD/after/list/stop ; :: sends literal colon");
+ if(!strcmp(line,"help"))Serial.println("PRISMA :help :status :gfx :input :memory :logs all/gfx/input/mem/off :perf :mem :tasks :log :crash :debug on :debug off :bench :trace :mark LABEL :cursor click/click mouse/touch on/status/watch/yfind/ylist/testy Y [hexaddr]/test X Y/testx X/auto/base/right/left/down/up/list/stop :clave ref DDDD/after/list/stop ; :: sends literal colon");
  else if(!strcmp(line,"status"))prisma_diag_status();
  else if(!strcmp(line,"perf"))exportLog(true);
  else if(!strcmp(line,"gfx"))exportPhoto(0,6);
@@ -75,6 +77,7 @@ static void runCommand(){
  else if(!strcmp(line,"tasks"))Serial.printf("PRISMA TASKS count=%u loop_core=%d loop_stack=%u\n",(unsigned)uxTaskGetNumberOfTasks(),xPortGetCoreID(),(unsigned)uxTaskGetStackHighWaterMark(nullptr));
  else if(!strcmp(line,"debug on")){live=LOG_ALL;Serial.println("PRISMA DEBUG ON");}
  else if(!strcmp(line,"debug off")){live=LOG_OFF;Serial.println("PRISMA DEBUG OFF (history retained)");}
+ else if(!strcmp(line,"trace")){live=LOG_OFF;if(!dos_diag_scene_trace())Serial.println("067 TRACE unavailable");}
  else if(!strcmp(line,"bench")){if(!prisma_diag_bench())Serial.println("PRISMA BENCH unavailable: enter a DOS game or console first");}
  else if(!strncmp(line,"cursor ",7))dos_cursor_scan(line+7);
  else if(!strncmp(line,"clave ",6))dos_key_scan(line+6);

@@ -1,7 +1,7 @@
-name: S3 Retro - build 065 combined
+name: S3 Retro - build 067 combined
 on:
   push:
-    branches: [build-065-vga-sram]
+    branches: [build-067-fine-dirty-trace]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -323,16 +323,25 @@ jobs:
           src=p.read_text()
           old="static PrismaVGASnapshot *prismaSnapshot=nullptr;"
           assert src.count(old)==1
-          src=src.replace(old,old+"\nstatic uint32_t prismaDirty[4][8]={};\nstatic bool prismaFirstCapture=true;\nstatic inline void prismaMark(unsigned plane,unsigned addr){unsigned block=(addr&65535)>>8;prismaDirty[plane][block>>5]|=1u<<(block&31);}\nstatic uint32_t prismaBytes=0;\nuint32_t Video::prismaCaptureBytes(){return prismaBytes;}")
+          src=src.replace(old,old+"\nstatic uint32_t prismaDirty[4][32]={};\nstatic bool prismaFirstCapture=true;\nstatic inline void prismaMark(unsigned plane,unsigned addr){unsigned block=(addr&65535)>>6;prismaDirty[plane][block>>5]|=1u<<(block&31);}\nstatic uint32_t prismaBytes=0;\nuint32_t Video::prismaCaptureBytes(){return prismaBytes;}")
           old="for(unsigned i=0;i<4;i++) memcpy(s.planes[i],vga_RAM[i],65536);"
           assert src.count(old)==1
           src=src.replace(old,"""prismaBytes=0;
             for(unsigned i=0;i<4;i++){
               if(prismaFirstCapture){memcpy(s.planes[i],vga_RAM[i],65536);prismaBytes+=65536;}
-              else for(unsigned word=0;word<8;word++){
-                uint32_t mask=prismaDirty[i][word];
-                while(mask){unsigned bit=__builtin_ctz(mask);unsigned b=(word*32+bit)*256;
-                  memcpy(s.planes[i]+b,vga_RAM[i]+b,256);prismaBytes+=256;mask&=mask-1;}
+              else {
+                // Coalesce consecutive dirty 64-byte blocks, including across words.
+                unsigned block=0;
+                while(block<1024){
+                  unsigned word=block>>5,shift=block&31;
+                  uint32_t mask=prismaDirty[i][word] & (~0u<<shift);
+                  if(!mask){block=(word+1)*32;continue;}
+                  unsigned begin=word*32+__builtin_ctz(mask);
+                  block=begin+1;
+                  while(block<1024&&(prismaDirty[i][block>>5]&(1u<<(block&31))))++block;
+                  const unsigned bytes=(block-begin)*64;
+                  memcpy(s.planes[i]+begin*64,vga_RAM[i]+begin*64,bytes);prismaBytes+=bytes;
+                }
               }
               memset(prismaDirty[i],0,sizeof(prismaDirty[i]));
             }
@@ -361,13 +370,13 @@ jobs:
           old="static bool prismaFirstCapture=true;"
           assert src.count(old)==1
           src=src.replace(old,old+"""
-          static uint32_t prismaRenderDirty[4][8]={};
+          static uint32_t prismaRenderDirty[4][32]={};
           static bool prismaFullRender=true,prismaForceNext=true;
           static inline bool prismaRangeDirty(unsigned plane,unsigned addr,unsigned count){
             while(count){
-              unsigned a=addr&65535,block=a>>8;
+              unsigned a=addr&65535,block=a>>6;
               if(prismaRenderDirty[plane][block>>5]&(1u<<(block&31)))return true;
-              unsigned n=256-(a&255);if(n>count)n=count;
+              unsigned n=64-(a&63);if(n>count)n=count;
               addr+=n;count-=n;
             }
             return false;
@@ -622,7 +631,7 @@ jobs:
               assert src[start:].count(old)==1
               src=src[:start]+src[start:].replace(old,"prismaScaleDirtyValid=true;\n              "+old+"\n              prismaScaleDirtyValid=false;",1)
           p.write_text(src)
-          # 065: direct native VGA 256-color snapshot to the existing LCD cache.
+          # 067: direct native VGA 256-color snapshot to the existing LCD cache.
           p=path("Video.cpp","prismaRenderSnapshot()")
           src=p.read_text()
           src="extern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);\n"+src if src.startswith("#include <stdint.h>")==False else src.replace("#include <stdint.h>","#include <stdint.h>\nextern bool prismaFusedVga(const uint8_t (*)[65536],const uint16_t *,unsigned,const uint8_t *,bool);",1)
@@ -642,7 +651,7 @@ jobs:
               for(unsigned y=0;y<200;y++){
                 bool changed=full;
                 const unsigned a=(start+y*80)&65535;
-                for(unsigned p=0;p<4&&!changed;p++)changed=prismaRangeDirty(p,a,82);
+                for(unsigned p=0;p<4&&!changed;p++)changed=prismaRangeDirty(p,a,80);
                 dirty[y]=changed;
                 rows+=changed;
               }
@@ -1033,7 +1042,7 @@ jobs:
               used.update(pixels)
           assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","OCULTAR","^","<","v",">"}
           assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
-          print("065 PAD geometry verified, no overlapping touch zones")
+          print("067 PAD geometry verified, no overlapping touch zones")
           PY
       - name: Test touch double-tap predicate
         run: |
@@ -1074,7 +1083,7 @@ jobs:
                       native=[palette[planes[x%4][(start+sy*80+x//4)&65535]] for x in range(320)]
                       expanded=[p for p in native for _ in range(2)]
                       assert [expanded[x*640//dw] for x in range(dw)]==[native[(x*640//dw)//2] for x in range(dw)]
-          print("065 fused VGA coordinate and palette equivalence passed")
+          print("067 fused VGA coordinate and palette equivalence passed")
           PY
       - name: Test RAM cursor filter
         run: |
@@ -1103,13 +1112,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-065-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-065-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-065.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-067-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-067-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-067.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-065-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-067-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1118,6 +1127,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-065
+          name: PRISMA-RETRO-S3-067
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
