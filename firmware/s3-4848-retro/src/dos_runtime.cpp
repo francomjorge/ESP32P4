@@ -622,7 +622,7 @@ static void keyScanTick(){
  keyScanIndex=end;
  if(end==CURSOR_RAM_N-3){keyScanBusy=false;keyScanReady=true;keyScanReport();}
 }
-void dos_key_scan(const char *arg){
+static void keyScanCommand(const char *arg){
  if(!strcmp(arg,"stop")){keyScanFree();Serial.println("DOS KEYSCAN stopped; buffers released");return;}
  if(!strcmp(arg,"list")){keyScanReport();return;}
  if(!keyScanAvailable()){Serial.println("DOS KEYSCAN unavailable until Monkey Island is displayed");return;}
@@ -1017,6 +1017,7 @@ static void cursorAutoTick(){
  }
 }
 }
+void dos_key_scan(const char *arg){keyScanCommand(arg);}
 void dos_cursor_scan(const char *arg){
  if(!strcmp(arg,"stop")){cursorRamFree();cancelDirect();Serial.println("DOS RAM scan released; default RAM touch retained");return;}
  if(!strcmp(arg,"click")||!strcmp(arg,"click mouse")){
