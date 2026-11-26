@@ -1,7 +1,7 @@
-name: S3 Retro - build 061 combined
+name: S3 Retro - build 062 combined
 on:
   push:
-    branches: [build-061-dirty-spans]
+    branches: [build-062-scale-reuse]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -501,8 +501,10 @@ jobs:
                     out[0]=out[1]=c0;out[2]=out[3]=c1;out[4]=out[5]=c2;out[6]=out[7]=c3;
                     out+=8;a=(a+4)&65535;
                   }
-                  for(unsigned yy=0;yy<yscanpixels;yy++)
+                  for(unsigned yy=0;yy<yscanpixels;yy++){
                     memcpy(vga_framebuffer+(sy+yy)*VGA_FRAMEBUFFER_WIDTH,line,vga_w*sizeof(uint16_t));
+                    if(yy)prismaScaleAlias[sy+yy]=uint16_t(sy+1);
+                  }
                 }
                 break;
               }
@@ -605,13 +607,13 @@ jobs:
           # synchronous host blit. Without a hint the scaler uses full scan.
           p=path("Video.cpp","prismaRenderSnapshot()")
           src=p.read_text()
-          src="#include <stdint.h>\nextern uint8_t prismaScaleDirtyRows[];\nextern bool prismaScaleDirtyValid;\n"+src
+          src="#include <stdint.h>\nextern uint8_t prismaScaleDirtyRows[];\nextern uint16_t prismaScaleAlias[];\nextern bool prismaScaleDirtyValid;\n"+src
           old="__atomic_fetch_add(&prismaRows,end_y-start_y+1,__ATOMIC_RELAXED);"
           assert src.count(old)==1
-          src=src.replace(old,old+"\n  if(start_y<=end_y && end_y<VGA_FRAMEBUFFER_HEIGHT)memset(prismaScaleDirtyRows+start_y,1,end_y-start_y+1);\n  else memset(prismaScaleDirtyRows,1,VGA_FRAMEBUFFER_HEIGHT);")
+          src=src.replace(old,old+"\n  if(start_y<=end_y && end_y<VGA_FRAMEBUFFER_HEIGHT){memset(prismaScaleDirtyRows+start_y,1,end_y-start_y+1);memset(prismaScaleAlias+start_y,0,(end_y-start_y+1)*sizeof(uint16_t));}\n  else {memset(prismaScaleDirtyRows,1,VGA_FRAMEBUFFER_HEIGHT);memset(prismaScaleAlias,0,VGA_FRAMEBUFFER_HEIGHT*sizeof(uint16_t));}")
           old="void Video::prismaRenderSnapshot() {"
           assert src.count(old)==1
-          src=src.replace(old,old+"\n            memset(prismaScaleDirtyRows,0,VGA_FRAMEBUFFER_HEIGHT);")
+          src=src.replace(old,old+"\n            memset(prismaScaleDirtyRows,0,VGA_FRAMEBUFFER_HEIGHT);\n            memset(prismaScaleAlias,0,VGA_FRAMEBUFFER_HEIGHT*sizeof(uint16_t));")
           old="++prismaCgaRows;"
           assert src.count(old)==1
           src=src.replace(old,old+"\n                prismaScaleDirtyRows[y]=1;")
@@ -997,7 +999,7 @@ jobs:
               used.update(pixels)
           assert {k[0] for k in keys} >= set("0123456789")|{"ESC","ENTER","ESPACIO","OCULTAR","^","<","v",">"}
           assert '"SALIR",252' in s and '"CONFIRMAR SALIR",253' in s
-          print("061 PAD geometry verified, no overlapping touch zones")
+          print("062 PAD geometry verified, no overlapping touch zones")
           PY
       - name: Test touch double-tap predicate
         run: |
@@ -1050,13 +1052,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-061-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-061-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-061.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-062-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-062-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-062.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-061-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-062-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1065,6 +1067,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-061
+          name: PRISMA-RETRO-S3-062
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error

@@ -31,6 +31,8 @@ static Arduino_RGB_Display *dosLcd=nullptr;
 uint16_t *vga_framebuffer=nullptr;
 // Owned by the snapshot renderer; only valid during its synchronous blit.
 uint8_t prismaScaleDirtyRows[VGA_FRAMEBUFFER_HEIGHT]={};
+// A nonzero alias identifies an identical RGB565 row produced by the same VGA raster pass.
+uint16_t prismaScaleAlias[VGA_FRAMEBUFFER_HEIGHT]={};
 bool prismaScaleDirtyValid=false;
 static bool launcher=false;
 static uint32_t diskReads=0,diskHits=0,diskReadUs=0,diskMappedReads=0,diskMappedBytes=0;
@@ -131,7 +133,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   }
 public:
   uint32_t frames=0, work=0, skipped=0, dropped=0, renderMax=0;
-  uint32_t scaleUs=0,scaleCalls=0,scaleRows=0,scalePossible=0;
+  uint32_t scaleUs=0,scaleCalls=0,scaleRows=0,scalePossible=0,scaleReuse=0;
   uint32_t profileWorkerUs=0,profileRasterUs=0,profileJobs=0;
   uint32_t profileClearUs=0,profileCopyUs=0,profileFlushUs=0,profilePixels=0,profilePresentN=0;
   uint32_t profileSpanPixels=0,profileRuns=0;
@@ -172,14 +174,20 @@ public:
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
     memset(changedRows,0,dh);
     int prevY=-1;
-    unsigned processed=0;
+    unsigned processed=0,reused=0;
+    const bool aliasValid=prismaScaleDirtyValid&&pixels==vga_framebuffer;
     const bool useHints=prismaScaleDirtyValid&&!force&&pixels==vga_framebuffer;
     for(int y=0;y<dh;y++){
       if((y&31)==0&&micros()-lastCooperate>=15000){vTaskDelay(1);lastCooperate=micros();}
       if(useHints&&!prismaScaleDirtyRows[ymap[y]])continue;
       ++processed;
-      const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+ymap[y]*stride);
-      if(ymap[y]!=prevY){
+      const unsigned sy=ymap[y];
+      // Only use aliases explicitly emitted by the current raster snapshot.
+      // No inference from mode/resolution or previous frames.
+      const unsigned hint=aliasValid?prismaScaleAlias[sy]:0;
+      const unsigned sourceY=hint&&hint<=sy?hint-1:sy;
+      const uint16_t *src=(const uint16_t*)((const uint8_t*)pixels+sourceY*stride);
+      if(int(sourceY)!=prevY){
         if(dw==w)memcpy(row,src,dw*2);
         else{
           // Read the source row sequentially from PSRAM, then gather
@@ -193,14 +201,15 @@ public:
           }
           for(;x<dw;x++)row[x]=sample[xmap[x]];
         }
-        prevY=ymap[y];
-      }
+        prevY=sourceY;
+      }else ++reused;
       uint16_t *prev=cache+y*dw;
       if(force||memcmp(prev,row,dw*2)){memcpy(prev,row,dw*2);changed=true;changedRows[y]=1;dirtyFirst=min(dirtyFirst,y);dirtyLast=y;}
     }
     __atomic_fetch_add(&scaleUs,micros()-scaleStart,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scaleCalls,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scaleRows,processed,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&scaleReuse,reused,__ATOMIC_RELAXED);
     __atomic_fetch_add(&scalePossible,dh,__ATOMIC_RELAXED);
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
@@ -1477,7 +1486,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 061 DOS: draw cadence 33ms / 30Hz target");
+ Serial.println("BUILD 062 DOS: draw cadence 33ms / 30Hz target");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1589,6 +1598,7 @@ void dos_tick(){
     diag_logf(true,"DOS RASTER rows=%u possible=%u\n",rasterRows,rasterPossible);
     uint32_t scaleTime=__atomic_exchange_n(&host.video.scaleUs,0,__ATOMIC_RELAXED),scaleN=__atomic_exchange_n(&host.video.scaleCalls,0,__ATOMIC_RELAXED);
     uint32_t sr=__atomic_exchange_n(&host.video.scaleRows,0,__ATOMIC_RELAXED),sp=__atomic_exchange_n(&host.video.scalePossible,0,__ATOMIC_RELAXED);
+    const uint32_t reused=__atomic_exchange_n(&host.video.scaleReuse,0,__ATOMIC_RELAXED);
     diag_logf(true, "DOS SCALE avg_us=%u calls=%u rows=%u possible=%u\n",scaleN?scaleTime/scaleN:0,scaleN,sr,sp);
     // Interval counters are sampled independently, as with DOS SCALE.
     const uint32_t jobs=__atomic_exchange_n(&host.video.profileJobs,0,__ATOMIC_RELAXED);
@@ -1608,18 +1618,19 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"061 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"062 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
     diag_photo_line(4,"frames %u jobs %u busy %u",shown,jobs,gfxBusy);
-    diag_photo_line(5,"px %u/%u runs %u",pixels,spanPixels,runs);
+    diag_photo_line(5,"px %u/%u reuse %u",pixels,spanPixels,reused);
+    diag_logf(true,"DOS GFX REUSE rows=%u processed=%u\n",reused,sr);
     diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
-    diag_photo_line(6,"061 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(6,"062 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"061 MEM t=%us",millis()/1000);
+    diag_photo_line(10,"062 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
