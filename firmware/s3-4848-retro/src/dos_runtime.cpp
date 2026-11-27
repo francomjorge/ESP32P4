@@ -1,3 +1,4 @@
+#include "prisma_damage.h"
 #include <Arduino.h>
 #include "prisma_diag.h"
 #include <Arduino_GFX_Library.h>
@@ -71,7 +72,7 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   uint16_t *sourceRow=nullptr;
   uint16_t xmap[480],ymap[480],row[480];
   alignas(4) uint8_t planeRow[4][80],previousPlaneRow[4][80];
-  uint16_t segmentEdge[11];
+  uint16_t segmentEdge[11],nativeEdge[321];
   uint32_t lastPresentUs=0;
   void recordPresent(){
     const uint32_t now=micros(),start=__atomic_load_n(&traceStartUs,__ATOMIC_RELAXED);
@@ -156,6 +157,7 @@ public:
   uint32_t profileSpanPixels=0,profileRuns=0,fusedFrames=0,fusedRows=0,directJobs=0;
   uint32_t traceJobs=0,traceFrames=0,traceWorkerUs=0,traceRows=0,traceFull=0;
   uint32_t traceSpanPixels=0,traceCandidatePixels=0,traceStartUs=0,traceGapUs=0;
+  uint32_t traceDamageNative=0,traceDamageCoarse=0,traceDamageRows=0;
   void invalidate(){__atomic_store_n(&invalid,true,__ATOMIC_RELAXED);__atomic_store_n(&viewport,0,__ATOMIC_RELAXED);}
   bool touchPosition(int x,int y,uint16_t &nx,uint16_t &ny){uint32_t v=__atomic_load_n(&viewport,__ATOMIC_RELAXED);int w=v&511,h=(v>>9)&511,top=(v>>18)&511;int l=(480-w)/2,t=(top-h)/2;if(w<2||h<2||x<l||x>=l+w||y<t||y>=t+h)return false;nx=uint32_t(x-l)*65535/(w-1);ny=uint32_t(y-t)*65535/(h-1);return true;}
   bool asyncReady(){return task!=nullptr;}
@@ -181,7 +183,7 @@ public:
   // Native VGA 320x200 data represented by the legacy 640x400 mode.
   // Use the same two-stage nearest-neighbor coordinate mapping exactly,
   // but decode palette colors only once per native source row.
-  bool fusedVga(const uint8_t (*planes)[65536],const uint16_t *palette,unsigned start,const uint8_t *dirty,bool full){
+  bool fusedVga(const uint8_t (*planes)[65536],const uint16_t *palette,unsigned start,const uint16_t *dirty,bool full){
     if(!cache||!sourceRow||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED))return false;
     const uint32_t t=micros();
     constexpr int w=640,h=400;
@@ -200,11 +202,13 @@ public:
       for(int y=0;y<dh;y++)ymap[y]=y*h/dh;
       Serial.printf("DOS VIDEO %dx%d -> %dx%d fused\n",w,h,dw,dh);
     }
-    if(force){int edge=0;for(unsigned k=0;k<=10;++k){while(edge<dw&&(xmap[edge]>>1)<k*32)++edge;segmentEdge[k]=edge;}}
+    if(force){prismaNativeEdges(xmap,dw,nativeEdge);for(unsigned k=0;k<=10;++k)segmentEdge[k]=nativeEdge[k*32];}
     traceWorker(2);
     dirtyFirst=dh;dirtyLast=-1;memset(changedRows,0,dh);
     int prevY=-1;unsigned processed=0,reused=0,decoded=0,written=0;
     unsigned mask=0,convertedPixels=0,candidatePixels=0,writtenPixels=0;
+    uint32_t damage[10]={};bool sparse=false;
+    unsigned fineNative=0,fineCoarse=0,fineRows=0;
     uint32_t cooperate=t,clearTime=0;
     bool paletteStaged=false;
     const int left=(480-dw)/2,upper=(top-dh)/2;
@@ -238,6 +242,7 @@ public:
             memcpy(previousPlaneRow,prior,sizeof(planeRow));
             mask=0;
             for(unsigned k=0;k<10;++k){
+              if(!(dirty[sy]&(1u<<k)))continue;
               const unsigned a=k*8;
               for(unsigned p=0;p<4;++p)if(memcmp(previousPlaneRow[p]+a,planeRow[p]+a,8)){mask|=1u<<k;break;}
             }
@@ -246,7 +251,26 @@ public:
           // A dense change is cheaper as one contiguous row.
           if(__builtin_popcount(mask)>=7)mask=1023;
         }
-        for(unsigned k=0;k<10;++k)if(mask&(1u<<k)){
+        // Sparse rows reuse exact native colors and inverse x coordinates.
+        // Dense rows stay on the established sequential 074 path.
+        sparse=direct&&!force&&mask&&__builtin_popcount(mask)<7;
+        if(sparse){
+          ++fineRows;
+          for(unsigned k=0;k<10;++k){
+            damage[k]=0;
+            if(!(mask&(1u<<k)))continue;
+            fineCoarse+=32;
+            uint32_t bits=prismaPixelDamage(planeRow,previousPlaneRow,localPalette,k);
+            if(__builtin_popcount(bits)>=16)bits=~0u;
+            damage[k]=bits;fineNative+=__builtin_popcount(bits);
+            while(bits){
+              const unsigned b=__builtin_ctz(bits),p=k*32+b;
+              const uint16_t c=localPalette[planeRow[p&3][p>>2]];
+              for(unsigned x=nativeEdge[p];x<nativeEdge[p+1];++x)row[x]=c;
+              bits&=bits-1;
+            }
+          }
+        }else for(unsigned k=0;k<10;++k)if(mask&(1u<<k)){
           for(unsigned a=k*8;a<(k+1)*8;++a){
             const unsigned x=a*4;
             sourceRow[x]=localPalette[planeRow[0][a]];
@@ -261,7 +285,18 @@ public:
       candidatePixels+=dw;
       uint16_t *prev=direct?lcdFrame+(upper+y)*480+left:cache+y*dw;
       bool changed=false;
-      for(unsigned k=0;k<10;){
+      if(sparse){
+        for(unsigned k=0;k<10;++k){
+          uint32_t bits=damage[k];
+          while(bits){
+            const unsigned first=__builtin_ctz(bits),end=prismaDamageRunEnd(bits,first);
+            const unsigned x=nativeEdge[k*32+first],n=nativeEdge[k*32+end]-x;
+            convertedPixels+=n;
+            if(n&&memcmp(prev+x,row+x,n*2)){memcpy(prev+x,row+x,n*2);writtenPixels+=n;changed=true;}
+            bits &= end==32?0u:(~0u<<end);
+          }
+        }
+      }else for(unsigned k=0;k<10;){
         if(!(mask&(1u<<k))){++k;continue;}
         const unsigned first=k;
         do{++k;}while(k<10&&(mask&(1u<<k)));
@@ -284,6 +319,9 @@ public:
     __atomic_fetch_add(&traceRows,decoded,__ATOMIC_RELAXED);
     __atomic_fetch_add(&traceSpanPixels,convertedPixels,__ATOMIC_RELAXED);
     __atomic_fetch_add(&traceCandidatePixels,candidatePixels,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&traceDamageNative,fineNative,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&traceDamageCoarse,fineCoarse,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&traceDamageRows,fineRows,__ATOMIC_RELAXED);
     if(force)__atomic_fetch_add(&traceFull,1,__ATOMIC_RELAXED);
     jobW=dw;jobH=dh;jobTop=top;jobClear=force;
     __atomic_store_n(&viewport,uint32_t(dw)|(uint32_t(dh)<<9)|(uint32_t(top)<<18),__ATOMIC_RELAXED);
@@ -473,7 +511,7 @@ public:
 };
 struct DiskHeader {char magic[8];uint32_t floppyOffset,floppySize,hardOffset,hardSize;};
 static PrismaHost host;
-bool prismaFusedVga(const uint8_t (*planes)[65536],const uint16_t *palette,unsigned start,const uint8_t *dirty,bool full){return host.video.fusedVga(planes,palette,start,dirty,full);}
+bool prismaFusedVga(const uint8_t (*planes)[65536],const uint16_t *palette,unsigned start,const uint16_t *dirty,bool full){return host.video.fusedVga(planes,palette,start,dirty,full);}
 static Faux86::Config cfg(&host);
 static Faux86::VM *vm=nullptr;
 static void renderSnapshot(){vm->video.prismaRenderSnapshot();}
@@ -1289,7 +1327,7 @@ struct SceneTraceSample {uint32_t at,ms,ips,frames,jobs,work,rows,full,reads,wri
 static bool sceneTraceActive=false;
 static uint32_t sceneTraceStart=0,sceneTraceLast=0;
 static uint64_t sceneTraceInstructions=0;
-static uint32_t sceneTracePrev[15]={};
+static uint32_t sceneTracePrev[15]={},sceneDamageStart[3]={};
 static SceneTraceSample sceneTraceSamples[24]={};
 static unsigned sceneTraceCount=0;
 static bool sceneCpuActive=false;
@@ -1312,10 +1350,13 @@ bool dos_diag_scene_trace(){
  sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);
  sceneTraceCount=0;sceneTraceStart=sceneTraceLast=millis();
  sceneTraceInstructions=vm->cpu.totalexec;sceneTraceCounters(sceneTracePrev);
+ sceneDamageStart[0]=__atomic_load_n(&host.video.traceDamageNative,__ATOMIC_RELAXED);
+ sceneDamageStart[1]=__atomic_load_n(&host.video.traceDamageCoarse,__ATOMIC_RELAXED);
+ sceneDamageStart[2]=__atomic_load_n(&host.video.traceDamageRows,__ATOMIC_RELAXED);
  __atomic_store_n(&host.video.traceGapUs,0,__ATOMIC_RELAXED);
  __atomic_store_n(&host.video.traceStartUs,uint32_t(micros()),__ATOMIC_RELAXED);
  sceneTraceActive=true;
- Serial.println("074 TRACE START 12s - move now");return true;
+ Serial.println("075 TRACE START 12s - move now");return true;
 }
 bool dos_diag_cpu_profile(){
  if(!dos_diag_scene_trace())return false;
@@ -1345,7 +1386,7 @@ static void sceneTracePrint(const char *label,const SceneTraceSample &v){
 }
 static void sceneTraceTick(){
  if(!sceneTraceActive)return;
- if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("074 TRACE cancelled");return;}
+ if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("075 TRACE cancelled");return;}
  uint32_t now=millis(),dt=now-sceneTraceLast;
  if(dt<500)return;
  uint32_t cur[15];sceneTraceCounters(cur);
@@ -1366,7 +1407,7 @@ static void sceneTraceTick(){
    const auto &h=sceneTraceSamples[heavy];
    if(q.jobs&&(!h.jobs||uint64_t(q.work)*h.jobs>uint64_t(h.work)*q.jobs))heavy=i;
  }
- Serial.printf("074 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
+ Serial.printf("075 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
  if(sceneCpuActive){
    Faux86::CPU::prismaProfileEnable(false);sceneCpuActive=false;
    uint32_t total[10]={},hostUs=0,capUs=0,capN=0,vramBatches=0,vramWords=0,chainBatches=0,chainBytes=0;unsigned peakPoll=0,peakRep=0;
@@ -1385,6 +1426,7 @@ static void sceneTraceTick(){
    sceneTracePrint("GFX MAX",sceneTraceSamples[heavy]);
    if(lowFps!=slow&&lowFps!=heavy)sceneTracePrint("FPS MIN",sceneTraceSamples[lowFps]);
  }
+ Serial.printf("DAMAGE native %u/%u rows %u\n",__atomic_load_n(&host.video.traceDamageNative,__ATOMIC_RELAXED)-sceneDamageStart[0],__atomic_load_n(&host.video.traceDamageCoarse,__ATOMIC_RELAXED)-sceneDamageStart[1],__atomic_load_n(&host.video.traceDamageRows,__ATOMIC_RELAXED)-sceneDamageStart[2]);
  Serial.printf("TRACE jobs %u frames %u target 50Hz\n",jobs,frames);
  Serial.printf("MAX FRAME GAP %u ms (includes idle)\n",gap/1000);
  Serial.println("TRACE END");
@@ -1744,7 +1786,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 074 DOS: capture target 20ms / 50Hz");
+ Serial.println("BUILD 075 DOS: capture target 20ms / 50Hz");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1879,7 +1921,7 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"074 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"075 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
@@ -1889,11 +1931,11 @@ void dos_tick(){
     diag_logf(true,"DOS GFX FUSED jobs=%u native_rows=%u px=%u/%u\n",fused,nativeRows,pixels,spanPixels);
     diag_logf(true,"DOS GFX REUSE rows=%u processed=%u\n",reused,sr);
     diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
-    diag_photo_line(6,"074 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(6,"075 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"074 MEM t=%us",millis()/1000);
+    diag_photo_line(10,"075 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
