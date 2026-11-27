@@ -72,7 +72,6 @@ class PrismaVideo final : public Faux86::FrameBufferInterface {
   uint16_t *sourceRow=nullptr;
   uint16_t xmap[480],ymap[480],row[480];
   alignas(4) uint8_t planeRow[4][80],previousPlaneRow[4][80];
-  uint16_t segmentEdge[11],nativeEdge[321];
   uint32_t lastPresentUs=0;
   void recordPresent(){
     const uint32_t now=micros(),start=__atomic_load_n(&traceStartUs,__ATOMIC_RELAXED);
@@ -181,29 +180,25 @@ public:
     Serial.printf("DOS VGA+LCD worker=%s\n",task?"core0":"sync");
     return true;
   }
-  // Native VGA 320x200 data represented by the legacy 640x400 mode.
-  // Use the same two-stage nearest-neighbor coordinate mapping exactly,
-  // but decode palette colors only once per native source row.
+  // 077 experiment: show native 320x200 VGA pixels 1:1 on the LCD.
+  // Keep snapshot/damage/CPU pacing unchanged; no resampling or row duplication.
   bool fusedVga(const uint8_t (*planes)[65536],const uint16_t *palette,unsigned start,const uint16_t *dirty,bool full){
-    if(!cache||!sourceRow||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED))return false;
+    if(!cache||__atomic_load_n(&hideGuest,__ATOMIC_RELAXED))return false;
     const uint32_t t=micros();
     constexpr int w=640,h=400;
     const int top=panelTop();
-    int dw=480,dh=400;
-    if(dh>top){dw=max(1,dw*top/dh);dh=top;}
+    constexpr int dw=320,dh=200;
+    if(top<dh)return false;
     // This appliance uses rotation 0, 480x480, zero offsets, one LCD
     // framebuffer and manual cache writeback. Same worker/lock as present().
     uint16_t *lcdFrame=(dosLcd->width()==480&&dosLcd->height()==480&&dosLcd->getRotation()==0)?dosLcd->getFramebuffer():nullptr;
     const bool direct=lcdFrame!=nullptr;
     bool force=__atomic_exchange_n(&invalid,false,__ATOMIC_RELAXED)||full||(direct!=directMode);
     directMode=direct;
-    if(w!=oldW||h!=oldH||top!=oldTop){
+    if(w!=oldW||h!=oldH||top!=oldTop||jobW!=dw||jobH!=dh){
       force=true;oldW=w;oldH=h;oldTop=top;
-      for(int x=0;x<dw;x++)xmap[x]=x*w/dw;
-      for(int y=0;y<dh;y++)ymap[y]=y*h/dh;
-      Serial.printf("DOS VIDEO %dx%d -> %dx%d fused\n",w,h,dw,dh);
+      Serial.printf("DOS VIDEO VGA NATIVE %dx%d 1:1 (legacy %dx%d)\n",dw,dh,w,h);
     }
-    if(force){prismaNativeEdges(xmap,dw,nativeEdge);for(unsigned k=0;k<=10;++k)segmentEdge[k]=nativeEdge[k*32];}
     traceWorker(2);
     dirtyFirst=dh;dirtyLast=-1;memset(changedRows,0,dh);
     int prevY=-1;unsigned processed=0,reused=0,decoded=0,written=0;
@@ -220,7 +215,7 @@ public:
     }
     for(int y=0;y<dh;y++){
       if((y&31)==0&&micros()-cooperate>=15000){vTaskDelay(1);cooperate=micros();}
-      unsigned sy=ymap[y]>>1;
+      const unsigned sy=unsigned(y);
       if(!force&&!dirty[sy])continue;
       ++processed;
       if(int(sy)!=prevY){
@@ -252,7 +247,7 @@ public:
           // A dense change is cheaper as one contiguous row.
           if(__builtin_popcount(mask)>=7)mask=1023;
         }
-        // Sparse rows reuse exact native colors and inverse x coordinates.
+        // Sparse rows reuse exact native colors at their original coordinates.
         // Dense rows stay on the established sequential 074 path.
         sparse=direct&&!force&&mask&&__builtin_popcount(mask)<7;
         if(sparse){
@@ -267,19 +262,18 @@ public:
             while(bits){
               const unsigned b=__builtin_ctz(bits),p=k*32+b;
               const uint16_t c=localPalette[planeRow[p&3][p>>2]];
-              for(unsigned x=nativeEdge[p];x<nativeEdge[p+1];++x)row[x]=c;
+              row[p]=c;
               bits&=bits-1;
             }
           }
         }else for(unsigned k=0;k<10;++k)if(mask&(1u<<k)){
           for(unsigned a=k*8;a<(k+1)*8;++a){
             const unsigned x=a*4;
-            sourceRow[x]=localPalette[planeRow[0][a]];
-            sourceRow[x+1]=localPalette[planeRow[1][a]];
-            sourceRow[x+2]=localPalette[planeRow[2][a]];
-            sourceRow[x+3]=localPalette[planeRow[3][a]];
+            row[x]=localPalette[planeRow[0][a]];
+            row[x+1]=localPalette[planeRow[1][a]];
+            row[x+2]=localPalette[planeRow[2][a]];
+            row[x+3]=localPalette[planeRow[3][a]];
           }
-          for(unsigned x=segmentEdge[k];x<segmentEdge[k+1];++x)row[x]=sourceRow[xmap[x]>>1];
         }
         prevY=sy;++decoded;
       }else ++reused;
@@ -291,7 +285,7 @@ public:
           uint32_t bits=damage[k];
           while(bits){
             const unsigned first=__builtin_ctz(bits),end=prismaDamageRunEnd(bits,first);
-            const unsigned x=nativeEdge[k*32+first],n=nativeEdge[k*32+end]-x;
+            const unsigned x=k*32+first,n=end-first;
             convertedPixels+=n;
             if(n&&memcmp(prev+x,row+x,n*2)){memcpy(prev+x,row+x,n*2);writtenPixels+=n;changed=true;}
             bits &= end==32?0u:(~0u<<end);
@@ -301,7 +295,7 @@ public:
         if(!(mask&(1u<<k))){++k;continue;}
         const unsigned first=k;
         do{++k;}while(k<10&&(mask&(1u<<k)));
-        const unsigned x=segmentEdge[first],n=segmentEdge[k]-x;
+        const unsigned x=first*32,n=(k-first)*32;
         convertedPixels+=n;
         if(n&&(force||memcmp(prev+x,row+x,n*2))){
           memcpy(prev+x,row+x,n*2);writtenPixels+=n;changed=true;
@@ -360,7 +354,7 @@ public:
     // switching render paths; the snapshot renderer forces a full raster too.
     bool force=__atomic_exchange_n(&invalid,false,__ATOMIC_RELAXED)||directMode;
     directMode=false;
-    if(w!=oldW||h!=oldH||top!=oldTop){force=true;oldW=w;oldH=h;oldTop=top;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
+    if(w!=oldW||h!=oldH||top!=oldTop||jobW!=dw||jobH!=dh){force=true;oldW=w;oldH=h;oldTop=top;for(int x=0;x<dw;x++)xmap[x]=x*w/dw;for(int y=0;y<dh;y++)ymap[y]=y*h/dh;Serial.printf("DOS VIDEO %dx%d -> %dx%d\n",w,h,dw,dh);}
     traceWorker(2);const uint32_t scaleStart=micros();uint32_t lastCooperate=scaleStart;
     bool changed=force;dirtyFirst=dh;dirtyLast=-1;
     memset(changedRows,0,dh);
@@ -1376,7 +1370,7 @@ bool dos_diag_scene_trace(){
  __atomic_store_n(&host.video.traceGapUs,0,__ATOMIC_RELAXED);
  __atomic_store_n(&host.video.traceStartUs,uint32_t(micros()),__ATOMIC_RELAXED);
  sceneTraceActive=true;
- Serial.println("076 TRACE START 12s - move now");return true;
+ Serial.println("077 TRACE START 12s - move now");return true;
 }
 bool dos_diag_cpu_profile(){
  if(!dos_diag_scene_trace())return false;
@@ -1406,7 +1400,7 @@ static void sceneTracePrint(const char *label,const SceneTraceSample &v){
 }
 static void sceneTraceTick(){
  if(!sceneTraceActive)return;
- if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("076 TRACE cancelled");return;}
+ if(!vm||launcher||bootPhase||loadingGame||benchUntil){sceneTraceActive=false;sceneCpuActive=false;Faux86::CPU::prismaProfileEnable(false);__atomic_store_n(&host.video.traceStartUs,0,__ATOMIC_RELAXED);Serial.println("077 TRACE cancelled");return;}
  uint32_t now=millis(),dt=now-sceneTraceLast;
  if(dt<500)return;
  uint32_t cur[15];sceneTraceCounters(cur);
@@ -1427,7 +1421,7 @@ static void sceneTraceTick(){
    const auto &h=sceneTraceSamples[heavy];
    if(q.jobs&&(!h.jobs||uint64_t(q.work)*h.jobs>uint64_t(h.work)*q.jobs))heavy=i;
  }
- Serial.printf("076 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
+ Serial.printf("077 TRACE %ums %u windows FPS %.1f full %u\n",ms,sceneTraceCount,frames*1000.0/ms,full);
  if(sceneCpuActive){
    Faux86::CPU::prismaProfileEnable(false);sceneCpuActive=false;
    uint32_t total[10]={},hostUs=0,capUs=0,capN=0,vramBatches=0,vramWords=0,chainBatches=0,chainBytes=0;unsigned peakPoll=0,peakRep=0;
@@ -1810,7 +1804,7 @@ bool dos_start(Arduino_RGB_Display &display){
  dosTraceMain=dosTraceWorker=dosTraceMode=0;dosTraceMagic=DOS_TRACE_MAGIC;traceMain(10);
  showLoading(-1);
  Serial.printf("DOS ENTRY heap=%u psram=%u\n",ESP.getFreeHeap(),ESP.getFreePsram());
- Serial.println("BUILD 076 DOS: phase capture target ~16.13ms / 62Hz");
+ Serial.println("BUILD 077 DOS: native VGA 320x200 1:1 / phase capture 62Hz");
   const auto *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_ANY,"dosdata");
   DiskHeader h{};
   if(!part||esp_partition_read(part,0,&h,sizeof(h))!=ESP_OK||memcmp(h.magic,"PRDOS032",8)){fail("Missing DOS data");return false;}
@@ -1953,7 +1947,7 @@ void dos_tick(){
     diag_logf(true,"DOS GFX BASE ms=%u game=%d panel=%u fps=%.1f ips=%.0f frames=%u jobs=%u busy=%u\n",elapsed,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)),shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,shown,jobs,gfxBusy);
     diag_logf(true,"DOS GFX TIME sim_us=%lu cap_us=%u worker_us=%u raster_us=%u scale_us=%u copy_us=%u flush_us=%u clear_us=%u\n",(unsigned long)simulateTotalUs,captureTotalUs,workerUs,rasterUs,scaleTime,copyUs,flushUs,clearUs);
     diag_logf(true,"DOS GFX LOAD raster=%u/%u scale=%u/%u lcd_px=%u presents=%u capture_n=%u\n",rasterRows,rasterPossible,sr,sp,pixels,presents,captureN);
-    diag_photo_line(0,"076 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(0,"077 GFX t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(1,"FPS %.1f IPS %.0f dt=%ums",shown*1000.0/elapsed,(nowInstructions-lastInstructions)*1000.0/elapsed,elapsed);
     diag_photo_line(2,"us CAP %u RAS %u SCL %u",captureN?captureTotalUs/captureN:0,jobs?rasterUs/jobs:0,scaleN?scaleTime/scaleN:0);
     diag_photo_line(3,"us COPY %u FLUSH %u WORK %u",presents?copyUs/presents:0,presents?flushUs/presents:0,jobs?workerUs/jobs:0);
@@ -1963,11 +1957,11 @@ void dos_tick(){
     diag_logf(true,"DOS GFX FUSED jobs=%u native_rows=%u px=%u/%u\n",fused,nativeRows,pixels,spanPixels);
     diag_logf(true,"DOS GFX REUSE rows=%u processed=%u\n",reused,sr);
     diag_logf(true,"DOS GFX SPAN pixels=%u baseline=%u runs=%u\n",pixels,spanPixels,runs);
-    diag_photo_line(6,"076 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
+    diag_photo_line(6,"077 INPUT t=%us game=%d p=%u",millis()/1000,activeGame,unsigned(__atomic_load_n(&panelMode,__ATOMIC_RELAXED)));
     diag_photo_line(7,"key sent %u read %u free %d",vm->input.prismaSentCount,vm->input.prismaReadCount,vm->input.freeSlots());
     diag_photo_line(8,"tap %u double %u click %u",monkeySingle,monkeyDouble,monkeyClicksApplied);
     diag_photo_line(9,"move %u timeout %u reject %u",directMoves,directTimeouts,monkeyRamRejects);
-    diag_photo_line(10,"076 MEM t=%us",millis()/1000);
+    diag_photo_line(10,"077 MEM t=%us",millis()/1000);
     diag_photo_line(11,"heap %u psram %u",ESP.getFreeHeap(),ESP.getFreePsram());
     diag_photo_line(12,"stack main %u lcd %u",(unsigned)uxTaskGetStackHighWaterMark(nullptr),host.video.stackFree());
     diag_photo_line(13,"internal largest %u",(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
