@@ -1,7 +1,7 @@
-name: S3 Retro - build 075 combined
+name: S3 Retro - build 076 combined
 on:
   push:
-    branches: [build-075-vga-damage]
+    branches: [build-076-vga-pacing]
     paths:
       - 'firmware/s3-4848-retro/**'
       - '.github/workflows/s3-combined.yml'
@@ -1255,6 +1255,38 @@ jobs:
           p.write_text(src)
           p=path("CPU.h","void exec86(uint32_t execloops")
           edit(p,[("    void exec86(uint32_t execloops, uint16_t timing_interval);","    void exec86(uint32_t execloops, uint16_t timing_interval);\n    static void prismaProfileEnable(bool enabled);\n    static void prismaProfileRead(uint32_t *out);")])
+          # 076: phase-locked host capture and safe CPU checkpoint handoff.
+          # PIT, IRQ, keyboard, raster and guest timer divisors stay unchanged.
+          p=path("Timing.cpp","TimingScheduler::tick(bool bSkipDraw)")
+          p.with_name("prisma_pacing.h").write_text(Path("src/prisma_pacing.h").read_text())
+          src=p.read_text()
+          old="    vm.video.prismaDrawDue = true;\n    lastdrawtick = curtick;"
+          assert src.count(old)==1
+          src=src.replace(old,"""    const uint64_t slots=prismaFrameSlots(curtick,lastdrawtick,drawticks);
+              if(slots){
+                vm.video.prismaDrawSlots+=uint32_t(slots);
+                vm.video.prismaDrawMerged+=uint32_t(slots-1)+(vm.video.prismaDrawDue?1u:0u);
+                if(!vm.video.prismaDrawDue||!vm.video.prismaDrawSinceUs)
+                  vm.video.prismaDrawSinceUs=uint32_t(esp_timer_get_time());
+                vm.video.prismaDrawDue=true;
+              }""",1)
+          p.write_text('#include <esp_timer.h>\n#include "prisma_pacing.h"\n'+src)
+          p=path("Video.h","prismaDrawDue = false;")
+          edit(p,[("    bool prismaDrawDue = false;","""    bool prismaDrawDue = false;
+              bool prismaYieldForDraw=false;
+              uint32_t prismaDrawSlots=0,prismaDrawMerged=0,prismaDrawSinceUs=0,prismaDrawYields=0;""")])
+          p=path("CPU.cpp","prismaDeadline")
+          old="      if(prismaProfileOn){++prismaProfileCounters[3];prismaProfileCounters[4]+=uint32_t(esp_timer_get_time())-profileT;}"
+          src=p.read_text()
+          assert src.count(old)==1
+          src=src.replace(old,old+"""
+                // Return only at an existing instruction boundary, after
+                // the normal timer/input service, never inside a REP batch.
+                if(loopcount&&vm.video.prismaYieldForDraw&&vm.video.prismaDrawDue&&vm.video.updatedscreen){
+                  ++vm.video.prismaDrawYields;return;
+                }""",1)
+          p.write_text(src)
+          print("076 host VGA capture pacing installed")
           print("PRISMA 072 bounded CPU profiler installed")
           print("Faux86 042 input patches applied")
           PY
@@ -1384,6 +1416,38 @@ jobs:
           g++ -O2 -std=c++17 -Isrc /tmp/prisma075-test.cpp -o /tmp/prisma075-test
           /tmp/prisma075-test
           echo "075 candidate masks, palette aliases and exact scaled pixels passed"
+      - name: Verify capture phase and coalescing
+        run: |
+          cat >/tmp/prisma076-test.cpp <<'CPP'
+          #include "prisma_pacing.h"
+          #include <cassert>
+          #include <random>
+          int main(){
+            uint64_t last=0;
+            assert(prismaFrameSlots(15999,last,16000)==0&&last==0);
+            assert(prismaFrameSlots(16001,last,16000)==1&&last==16000);
+            assert(prismaFrameSlots(81500,last,16000)==4&&last==80000);
+            assert(prismaFrameSlots(81500,last,16000)==0);
+            assert(prismaFrameSlots(0,last,16000)==0);
+            assert(prismaFrameSlots(90000,last,0)==0);
+            std::mt19937 rng(76);
+            for(uint64_t base: {0ULL,0xffff0000ULL,0x10000000000ULL}){
+              uint64_t now=base,phase=base,sum=0;
+              const uint64_t period=161290;
+              for(unsigned i=0;i<50000;++i){
+                now+=rng()%600000;
+                uint64_t n=prismaFrameSlots(now,phase,period);
+                sum+=n;
+                assert(phase==base+sum*period);
+                assert(phase<=now&&now-phase<period);
+                assert(sum==(now-base)/period);
+              }
+            }
+          }
+          CPP
+          g++ -O2 -std=c++17 -Isrc /tmp/prisma076-test.cpp -o /tmp/prisma076-test
+          /tmp/prisma076-test
+          echo "076 phase test: 150000 random intervals passed"
       - run: pio run -e esp32-4848s040-combined
       - name: Test ModRM decode equivalence
         run: |
@@ -1525,13 +1589,13 @@ jobs:
           set -eux
           B=.pio/build/esp32-4848s040-combined
           mkdir -p dist
-          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-075-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-075-app.bin
-          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-075.elf
+          /tmp/prisma-esp-venv/bin/python -I -m esptool --chip esp32s3 merge-bin --flash-size 16MB --flash-mode dio --flash-freq 40m -o dist/PRISMA-RETRO-S3-076-merged.bin 0x0 "$B/bootloader.bin" 0x8000 "$B/partitions.bin" 0x10000 "$B/firmware.bin"
+          cp "$B/firmware.bin" dist/PRISMA-RETRO-S3-076-app.bin
+          cp "$B/firmware.elf" dist/PRISMA-RETRO-S3-076.elf
           if [ -f "$B/firmware.map" ]; then cp "$B/firmware.map" dist/; fi
           python - <<'PY'
           from pathlib import Path
-          p=Path("dist/PRISMA-RETRO-S3-075-merged.bin").read_bytes()
+          p=Path("dist/PRISMA-RETRO-S3-076-merged.bin").read_bytes()
           assert p[0]==0xe9 and p[2]==2 and p[3]==0x40, p[:4].hex()
           assert p[0x8000:0x8002]==b"\xaa\x50"
           assert p[0x10000]==0xe9
@@ -1540,6 +1604,6 @@ jobs:
           (cd dist && sha256sum *.bin > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
-          name: PRISMA-RETRO-S3-075
+          name: PRISMA-RETRO-S3-076
           path: firmware/s3-4848-retro/dist/
           if-no-files-found: error
